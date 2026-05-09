@@ -829,3 +829,11 @@ a {
     opacity: 1;
   }
 }
+.disabled-btn {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.disabled-btn:hover {
+  transform: none !important;
+}
