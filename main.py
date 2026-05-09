@@ -12,7 +12,12 @@ app = FastAPI(title="SynapseAI Backend")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[os.getenv("FRONTEND_URL", "http://localhost:5173")],
+    allow_origins=[
+    os.getenv(
+        "FRONTEND_URL",
+        "https://synapse-ai-green.vercel.app"
+    )
+],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
