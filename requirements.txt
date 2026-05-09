@@ -42,6 +42,8 @@ pydantic>=2.5.0
 # HTML parsing fallback
 html5lib>=1.1
 
-flask>=3.0.0
-flask-cors>=4.0.0
+
+# Backend server
+fastapi>=0.115.0
+uvicorn>=0.30.0
 gunicorn>=21.2.0
