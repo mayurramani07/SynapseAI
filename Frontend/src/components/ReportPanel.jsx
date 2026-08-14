@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { motion } from "framer-motion";
+import ReactMarkdown from "react-markdown";
 import { FileText, Copy, Download, Check } from "lucide-react";
 
 function ReportPanel({ topic, completed, result }) {
@@ -112,19 +113,19 @@ ${feedback}
       ) : (
         <div className="report-content">
           <h3>Final Improved Report</h3>
-          <pre>{finalReport}</pre>
+          <ReactMarkdown>{finalReport}</ReactMarkdown>
 
           <h3>Reasoning</h3>
-          <pre>{reasoning}</pre>
+          <ReactMarkdown>{reasoning}</ReactMarkdown>
 
           <h3>Evidence</h3>
-          <pre>{evidence}</pre>
+          <ReactMarkdown>{evidence}</ReactMarkdown>
 
           <h3>Insights</h3>
-          <pre>{insights}</pre>
+          <ReactMarkdown>{insights}</ReactMarkdown>
 
           <h3>Critic Feedback</h3>
-          <pre>{feedback}</pre>
+          <ReactMarkdown>{feedback}</ReactMarkdown>
         </div>
       )}
     </motion.div>
