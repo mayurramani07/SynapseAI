@@ -11,15 +11,145 @@ import re
 import time
 import json
 
+
+MAX_ATTEMPTS = 2
+RETRY_DELAY = 1.0
+
+
+def stage_success(data, duration=None, attempts=1):
+    return {
+        "status": "success",
+        "data": data,
+        "error": None,
+        "attempts": attempts,
+        "duration": duration,
+        "fallback_used": False
+    }
+
+
+def stage_failure(error, duration=None, attempts=1, fallback_used=False):
+    return {
+        "status": "failed",
+        "data": None,
+        "error": str(error),
+        "attempts": attempts,
+        "duration": duration,
+        "fallback_used": fallback_used
+    }
+
+
+def stage_degraded(
+    data,
+    error,
+    duration=None,
+    attempts=1
+):
+    return {
+        "status": "degraded",
+        "data": data,
+        "error": str(error),
+        "attempts": attempts,
+        "duration": duration,
+        "fallback_used": True
+    }
+
+
+def run_with_retry(
+    stage_name,
+    operation,
+    fallback=None,
+    max_attempts=MAX_ATTEMPTS,
+    retry_delay=RETRY_DELAY
+):
+    start_time = time.time()
+    last_error = None
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            result = operation()
+
+            if result is None:
+                raise ValueError(
+                    f"{stage_name} returned None"
+                )
+
+            duration = round(
+                time.time() - start_time,
+                2
+            )
+
+            return stage_success(
+                data=result,
+                duration=duration,
+                attempts=attempt
+            )
+
+        except Exception as e:
+            last_error = e
+
+            print(
+                f"{stage_name} attempt "
+                f"{attempt}/{max_attempts} failed: {e}"
+            )
+
+            if attempt < max_attempts:
+                time.sleep(retry_delay)
+
+    duration = round(
+        time.time() - start_time,
+        2
+    )
+
+    if fallback is not None:
+        try:
+            fallback_data = (
+                fallback()
+                if callable(fallback)
+                else fallback
+            )
+
+            return stage_degraded(
+                data=fallback_data,
+                error=last_error,
+                duration=duration,
+                attempts=max_attempts
+            )
+
+        except Exception as fallback_error:
+            return stage_failure(
+                error=fallback_error,
+                duration=duration,
+                attempts=max_attempts,
+                fallback_used=True
+            )
+
+    return stage_failure(
+        error=last_error,
+        duration=duration,
+        attempts=max_attempts,
+        fallback_used=False
+    )
+
+
 def smart_search(topic: str) -> str:
-    try:
-        result = web_search.invoke({"query": topic})
-        return str(result)
-    except Exception as e:
-        return f" Fallback summary: Basic info about {topic}. Error: {e}"
+    result = web_search.invoke({
+        "query": topic
+    })
+
+    if not result:
+        raise ValueError(
+            "Search returned empty result"
+        )
+
+    return str(result)
+
 
 def extract_urls(text: str) -> list:
-    urls = re.findall(r'https?://\S+', text)
+    urls = re.findall(
+        r'https?://\S+',
+        text
+    )
+
     return list(set(urls))
 
 
@@ -36,147 +166,318 @@ def rank_urls(urls: list) -> list:
     }
 
     def score(url):
-        return sum(v for k, v in priority.items() if k in url.lower())
+        return sum(
+            value
+            for domain, value in priority.items()
+            if domain in url.lower()
+        )
 
-    return sorted(urls, key=score, reverse=True)[:3]
+    return sorted(
+        urls,
+        key=score,
+        reverse=True
+    )[:3]
 
 
 def run_research_pipeline(topic: str) -> dict:
     state = {}
     start_time = time.time()
 
-    print("\n AI Research System Started")
+    print("\nAI Research System Started")
     print("=" * 60)
 
     print("\nSTEP 1 - Smart Search")
-    t1 = time.time()
 
-    state["search_results"] = smart_search(topic)
+    state["search_results"] = run_with_retry(
+        stage_name="Smart Search",
+        operation=lambda: smart_search(topic),
+        fallback=None
+    )
 
-    print(state["search_results"][:800])
-    print(f" {round(time.time() - t1, 2)}s")
+    print(
+        json.dumps(
+            state["search_results"],
+            indent=2,
+            ensure_ascii=False
+        )[:1000]
+    )
 
+    if state["search_results"]["status"] == "failed":
+        print(
+            "\nSearch failed. "
+            "Research pipeline cannot continue."
+        )
 
-    
+        return state
+
+    search_data = state["search_results"]["data"]
+
     print("\nSTEP 2 - URL Ranking + Scraping")
-    t2 = time.time()
 
-    try:
-        urls = rank_urls(extract_urls(state["search_results"]))
+    def scrape_operation():
+        urls = rank_urls(
+            extract_urls(search_data)
+        )
+
+        if not urls:
+            raise ValueError(
+                "No valid URLs found in search results"
+            )
+
         urls_str = ", ".join(urls)
 
         print("\nURLs:", urls_str)
 
-        scraped = scrape_urls.invoke({"urls": urls_str})
+        scraped = scrape_urls.invoke({
+            "urls": urls_str
+        })
 
-        if not scraped.strip():
-            raise Exception("Empty scrape")
+        if not scraped or not scraped.strip():
+            raise ValueError(
+                "Scraper returned empty content"
+            )
 
-        state["scraped_content"] = scraped
+        return scraped
 
-    except Exception as e:
-        state["scraped_content"] = f"Fallback:\n{state['search_results']}"
-        print("Scrape fallback:", e)
+    state["scraped_content"] = run_with_retry(
+        stage_name="URL Ranking + Scraping",
+        operation=scrape_operation,
+        fallback=lambda: search_data
+    )
 
-    print(state["scraped_content"][:800])
-    print(f" {round(time.time() - t2, 2)}s")
+    print(
+        json.dumps(
+            state["scraped_content"],
+            indent=2,
+            ensure_ascii=False
+        )[:1200]
+    )
+
+    research_data = state["scraped_content"]["data"]
 
     print("\nSTEP 3 - Reasoning")
-    t3 = time.time()
 
-    try:
-        state["reasoning"] = reasoning_chain.invoke({
-            "research": state["search_results"] + "\n\n" + state["scraped_content"]
-        })
-    except Exception as e:
-        state["reasoning"] = f"Reasoning Error: {e}"
+    state["reasoning"] = run_with_retry(
+        stage_name="Reasoning",
+        operation=lambda: reasoning_chain.invoke({
+            "research": (
+                search_data
+                + "\n\n"
+                + research_data
+            )
+        }),
+        fallback="Reasoning unavailable."
+    )
 
-    print(state["reasoning"][:800])
-    print(f" {round(time.time() - t3, 2)}s")
+    print(
+        json.dumps(
+            state["reasoning"],
+            indent=2,
+            ensure_ascii=False
+        )[:1000]
+    )
+
+    reasoning_data = state["reasoning"]["data"]
 
     print("\nSTEP 4 - Evidence Extraction")
-    t4 = time.time()
 
-    try:
-        state["evidence"] = evidence_chain.invoke({
-            "research": state["scraped_content"]
-        })
-    except Exception as e:
-        state["evidence"] = f"Evidence Error: {e}"
+    state["evidence"] = run_with_retry(
+        stage_name="Evidence Extraction",
+        operation=lambda: evidence_chain.invoke({
+            "research": research_data
+        }),
+        fallback=[]
+    )
 
-    print(state["evidence"][:800])
-    print(f" {round(time.time() - t4, 2)}s")
+    print(
+        json.dumps(
+            state["evidence"],
+            indent=2,
+            ensure_ascii=False
+        )[:1500]
+    )
 
+    evidence_data = state["evidence"]["data"]
 
     print("\nSTEP 5 - Insight Generation")
-    t5 = time.time()
 
-    try:
-        state["insights"] = insight_chain.invoke({
-            "research": state["scraped_content"],
-            "evidence": state["evidence"]
-        })
-    except Exception as e:
-        state["insights"] = f"Insight Error: {e}"
+    if evidence_data:
+        state["insights"] = run_with_retry(
+            stage_name="Insight Generation",
+            operation=lambda: insight_chain.invoke({
+                "research": research_data,
+                "evidence": json.dumps(
+                    evidence_data,
+                    ensure_ascii=False
+                )
+            }),
+            fallback=(
+                "Insights unavailable because "
+                "insight generation failed."
+            )
+        )
+    else:
+        state["insights"] = {
+            "status": "skipped",
+            "data": (
+                "Insights skipped because no "
+                "verified evidence was available."
+            ),
+            "error": None,
+            "attempts": 0,
+            "duration": 0,
+            "fallback_used": True
+        }
 
-    print(state["insights"][:800])
-    print(f" {round(time.time() - t5, 2)}s")
+    print(
+        json.dumps(
+            state["insights"],
+            indent=2,
+            ensure_ascii=False
+        )[:1000]
+    )
 
+    insights_data = state["insights"]["data"]
 
     print("\nSTEP 6 - Writer")
-    t6 = time.time()
 
-    try:
-        state["report"] = writer_chain.invoke({
+    state["report"] = run_with_retry(
+        stage_name="Writer",
+        operation=lambda: writer_chain.invoke({
             "topic": topic,
-            "research": state["search_results"] + "\n\n" + state["scraped_content"],
-            "reasoning": state["reasoning"],
-            "evidence": state["evidence"],
-            "insights": state["insights"]
-        })
-    except Exception as e:
-        state["report"] = f"Writer Error: {e}"
+            "research": (
+                search_data
+                + "\n\n"
+                + research_data
+            ),
+            "reasoning": reasoning_data,
+            "evidence": json.dumps(
+                evidence_data,
+                ensure_ascii=False
+            ),
+            "insights": insights_data
+        }),
+        fallback=None
+    )
 
-    print(state["report"][:1200])
-    print(f" {round(time.time() - t6, 2)}s")
+    print(
+        json.dumps(
+            state["report"],
+            indent=2,
+            ensure_ascii=False
+        )[:1500]
+    )
 
+    if state["report"]["status"] == "failed":
+        print(
+            "\nWriter failed. "
+            "Cannot continue to critic/improver."
+        )
 
+        state["final_report"] = state["report"]
+
+        print(
+            "\nTotal Time:",
+            round(
+                time.time() - start_time,
+                2
+            ),
+            "s"
+        )
+
+        return state
+
+    report_data = state["report"]["data"]
 
     print("\nSTEP 7 - Critic")
-    t7 = time.time()
 
-    try:
-        state["feedback"] = critic_chain.invoke({
-            "report": state["report"]
-        })
-    except Exception as e:
-        state["feedback"] = f"Critic Error: {e}"
+    state["feedback"] = run_with_retry(
+        stage_name="Critic",
+        operation=lambda: critic_chain.invoke({
+            "report": report_data,
+            "evidence": json.dumps(
+                evidence_data,
+                ensure_ascii=False
+            )
+        }),
+        fallback=None
+    )
 
-    print(state["feedback"])
-    print(f" {round(time.time() - t7, 2)}s")
+    print(
+        json.dumps(
+            state["feedback"],
+            indent=2,
+            ensure_ascii=False
+        )[:1500]
+    )
 
+    if state["feedback"]["status"] == "failed":
+        state["final_report"] = stage_degraded(
+            data=report_data,
+            error=state["feedback"]["error"],
+            duration=state["feedback"]["duration"],
+            attempts=state["feedback"]["attempts"]
+        )
 
+        print(
+            "\nCritic unavailable. "
+            "Returning original report."
+        )
+
+        print(
+            "\nTotal Time:",
+            round(
+                time.time() - start_time,
+                2
+            ),
+            "s"
+        )
+
+        return state
+
+    feedback_data = state["feedback"]["data"]
 
     print("\nSTEP 8 - Improver")
-    t8 = time.time()
 
-    try:
-        state["final_report"] = improver_chain.invoke({
-            "report": state["report"],
-            "feedback": state["feedback"]
-        })
-    except Exception as e:
-        state["final_report"] = f"Improver Error: {e}"
+    state["final_report"] = run_with_retry(
+        stage_name="Improver",
+        operation=lambda: improver_chain.invoke({
+            "report": report_data,
+            "feedback": feedback_data
+        }),
+        fallback=report_data
+    )
 
-    print(state["final_report"][:1200])
-    print(f" {round(time.time() - t8, 2)}s")
+    print(
+        json.dumps(
+            state["final_report"],
+            indent=2,
+            ensure_ascii=False
+        )[:1500]
+    )
 
+    print("\nDONE")
 
-    print("\n DONE")
-    print("Total Time:", round(time.time() - start_time, 2), "s")
+    print(
+        "Total Time:",
+        round(
+            time.time() - start_time,
+            2
+        ),
+        "s"
+    )
 
     return state
 
+
 if __name__ == "__main__":
-    topic = input("Enter topic: ")
-    run_research_pipeline(topic)
+    topic = input(
+        "Enter topic: "
+    ).strip()
+
+    if not topic:
+        print(
+            "Please enter a research topic."
+        )
+    else:
+        run_research_pipeline(topic)
