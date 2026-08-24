@@ -10,10 +10,11 @@ from tools import web_search, scrape_urls
 import re
 import time
 import json
-
+import random
 
 MAX_ATTEMPTS = 2
-RETRY_DELAY = 1.0
+BASE_RETRY_DELAY = 1.0
+MAX_RETRY_DELAY = 8.0
 
 
 def stage_success(data, duration=None, attempts=1):
@@ -27,7 +28,12 @@ def stage_success(data, duration=None, attempts=1):
     }
 
 
-def stage_failure(error, duration=None, attempts=1, fallback_used=False):
+def stage_failure(
+    error,
+    duration=None,
+    attempts=1,
+    fallback_used=False
+):
     return {
         "status": "failed",
         "data": None,
@@ -38,28 +44,65 @@ def stage_failure(error, duration=None, attempts=1, fallback_used=False):
     }
 
 
-def stage_degraded(
-    data,
-    error,
-    duration=None,
-    attempts=1
-):
-    return {
-        "status": "degraded",
-        "data": data,
-        "error": str(error),
-        "attempts": attempts,
-        "duration": duration,
-        "fallback_used": True
-    }
+def classify_error(error):
+    error_text = str(error).lower()
+
+    non_retryable_errors = [
+        "authentication",
+        "invalid api key",
+        "api key",
+        "unauthorized",
+        "forbidden",
+        "bad request",
+        "invalid request",
+        "model_not_found",
+        "does not exist or you do not have access"
+    ]
+
+    retryable_errors = [
+        "timeout",
+        "timed out",
+        "connection",
+        "connection reset",
+        "connection refused",
+        "temporarily unavailable",
+        "service unavailable",
+        "rate limit",
+        "too many requests",
+        "429",
+        "500",
+        "502",
+        "503",
+        "504",
+        "server error"
+    ]
+
+    for pattern in non_retryable_errors:
+        if pattern in error_text:
+            return "non_retryable"
+
+    for pattern in retryable_errors:
+        if pattern in error_text:
+            return "retryable"
+
+    return "retryable"
+
+
+def calculate_retry_delay(attempt):
+    exponential_delay = BASE_RETRY_DELAY * (2 ** (attempt - 1))
+    jitter = random.uniform(0, 0.5)
+
+    return min(
+        exponential_delay + jitter,
+        MAX_RETRY_DELAY
+    )
 
 
 def run_with_retry(
     stage_name,
     operation,
     fallback=None,
-    max_attempts=MAX_ATTEMPTS,
-    retry_delay=RETRY_DELAY
+    max_attempts=MAX_ATTEMPTS
 ):
     start_time = time.time()
     last_error = None
@@ -84,16 +127,37 @@ def run_with_retry(
                 attempts=attempt
             )
 
-        except Exception as e:
-            last_error = e
+        except Exception as error:
+            last_error = error
+            error_type = classify_error(error)
 
             print(
                 f"{stage_name} attempt "
-                f"{attempt}/{max_attempts} failed: {e}"
+                f"{attempt}/{max_attempts} failed: "
+                f"{error}"
             )
 
+            print(
+                f"{stage_name} error type: "
+                f"{error_type}"
+            )
+
+            if error_type == "non_retryable":
+                print(
+                    f"{stage_name}: "
+                    f"non-retryable error"
+                )
+                break
+
             if attempt < max_attempts:
-                time.sleep(retry_delay)
+                delay = calculate_retry_delay(attempt)
+
+                print(
+                    f"{stage_name}: "
+                    f"retrying in {round(delay, 2)}s"
+                )
+
+                time.sleep(delay)
 
     duration = round(
         time.time() - start_time,
@@ -108,30 +172,32 @@ def run_with_retry(
                 else fallback
             )
 
-            return stage_degraded(
-                data=fallback_data,
-                error=last_error,
-                duration=duration,
-                attempts=max_attempts
-            )
+            return {
+                "status": "degraded",
+                "data": fallback_data,
+                "error": str(last_error),
+                "attempts": attempt,
+                "duration": duration,
+                "fallback_used": True
+            }
 
         except Exception as fallback_error:
             return stage_failure(
                 error=fallback_error,
                 duration=duration,
-                attempts=max_attempts,
+                attempts=attempt,
                 fallback_used=True
             )
 
     return stage_failure(
         error=last_error,
         duration=duration,
-        attempts=max_attempts,
+        attempts=attempt,
         fallback_used=False
     )
 
 
-def smart_search(topic: str) -> str:
+def smart_search(topic):
     result = web_search.invoke({
         "query": topic
     })
@@ -144,7 +210,7 @@ def smart_search(topic: str) -> str:
     return str(result)
 
 
-def extract_urls(text: str) -> list:
+def extract_urls(text):
     urls = re.findall(
         r'https?://\S+',
         text
@@ -153,11 +219,12 @@ def extract_urls(text: str) -> list:
     return list(set(urls))
 
 
-def rank_urls(urls: list) -> list:
+def rank_urls(urls):
     priority = {
         ".gov": 5,
         ".edu": 5,
         "worldbank": 5,
+        "imf": 5,
         "reuters": 4,
         "bloomberg": 4,
         "forbes": 3,
@@ -179,7 +246,7 @@ def rank_urls(urls: list) -> list:
     )[:3]
 
 
-def run_research_pipeline(topic: str) -> dict:
+def run_research_pipeline(topic):
     state = {}
     start_time = time.time()
 
@@ -206,6 +273,12 @@ def run_research_pipeline(topic: str) -> dict:
         print(
             "\nSearch failed. "
             "Research pipeline cannot continue."
+        )
+
+        print(
+            "\nTotal Time:",
+            round(time.time() - start_time, 2),
+            "s"
         )
 
         return state
@@ -378,10 +451,7 @@ def run_research_pipeline(topic: str) -> dict:
 
         print(
             "\nTotal Time:",
-            round(
-                time.time() - start_time,
-                2
-            ),
+            round(time.time() - start_time, 2),
             "s"
         )
 
@@ -412,12 +482,14 @@ def run_research_pipeline(topic: str) -> dict:
     )
 
     if state["feedback"]["status"] == "failed":
-        state["final_report"] = stage_degraded(
-            data=report_data,
-            error=state["feedback"]["error"],
-            duration=state["feedback"]["duration"],
-            attempts=state["feedback"]["attempts"]
-        )
+        state["final_report"] = {
+            "status": "degraded",
+            "data": report_data,
+            "error": state["feedback"]["error"],
+            "attempts": state["feedback"]["attempts"],
+            "duration": state["feedback"]["duration"],
+            "fallback_used": True
+        }
 
         print(
             "\nCritic unavailable. "
@@ -426,10 +498,7 @@ def run_research_pipeline(topic: str) -> dict:
 
         print(
             "\nTotal Time:",
-            round(
-                time.time() - start_time,
-                2
-            ),
+            round(time.time() - start_time, 2),
             "s"
         )
 
@@ -460,10 +529,7 @@ def run_research_pipeline(topic: str) -> dict:
 
     print(
         "Total Time:",
-        round(
-            time.time() - start_time,
-            2
-        ),
+        round(time.time() - start_time, 2),
         "s"
     )
 
