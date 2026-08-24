@@ -9,6 +9,7 @@ from agents import (
 from tools import web_search, scrape_urls
 import re
 import time
+import json
 
 def smart_search(topic: str) -> str:
     try:
