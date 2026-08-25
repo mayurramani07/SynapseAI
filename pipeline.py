@@ -636,29 +636,29 @@ def run_research_pipeline(topic):
 
     reasoning_data = reasoning["data"]
 
-    # evidence = run_with_retry(
-    #     request_id=request_id,
-    #     stage_name="Evidence Extraction",
-    #     operation=lambda: evidence_chain.invoke({
-    #         "research": research_data
-    #     }),
-    #     validator=validate_evidence_output,
-    #     fallback=[]
-    # )
     evidence = run_with_retry(
-    request_id=request_id,
-    stage_name="Evidence Extraction",
-    operation=lambda: [
-        {
-            "claim": "Test claim",
-            "supporting_text": "Test supporting text",
-            "source_url": "not-a-valid-url",
-            "evidence_type": "invalid_type"
-        }
-    ],
-    validator=validate_evidence_output,
-    fallback=[]
-)
+        request_id=request_id,
+        stage_name="Evidence Extraction",
+        operation=lambda: evidence_chain.invoke({
+            "research": research_data
+        }),
+        validator=validate_evidence_output,
+        fallback=[]
+    )
+#     evidence = run_with_retry(
+#     request_id=request_id,
+#     stage_name="Evidence Extraction",
+#     operation=lambda: [
+#         {
+#             "claim": "Test claim",
+#             "supporting_text": "Test supporting text",
+#             "source_url": "not-a-valid-url",
+#             "evidence_type": "invalid_type"
+#         }
+#     ],
+#     validator=validate_evidence_output,
+#     fallback=[]
+# )
 
     state["evidence"] = evidence
 
