@@ -75,6 +75,7 @@ def log_event(
         )
     )
 
+
 def stage_success(
     data,
     duration=None,
@@ -147,7 +148,6 @@ def classify_error(error):
         if pattern in error_text:
             return "retryable"
 
-    # Unknown/transient errors are treated as retryable.
     return "retryable"
 
 
@@ -183,6 +183,7 @@ def validate_search_output(data):
 
     return True
 
+
 def validate_scraped_output(data):
     if not isinstance(data, str):
         raise ValueError(
@@ -200,6 +201,7 @@ def validate_scraped_output(data):
         )
 
     return True
+
 
 def validate_reasoning_output(data):
     if not isinstance(data, str):
@@ -249,6 +251,7 @@ def validate_evidence_output(data):
         raise ValueError(
             "Evidence output must be a list"
         )
+
     if not data:
         return True
 
@@ -287,6 +290,7 @@ def validate_evidence_output(data):
 
 
 def normalize_evidence_output(data):
+
     if isinstance(data, dict):
 
         evidence = data.get(
@@ -303,14 +307,15 @@ def normalize_evidence_output(data):
             )
 
         return evidence
+
     if isinstance(data, list):
         return data
 
-    # Anything else is invalid.
     raise ValueError(
         "Unexpected evidence output type: "
         f"{type(data).__name__}"
     )
+
 
 def validate_grounding_output(data):
 
@@ -367,10 +372,6 @@ def validate_grounding_output(data):
 
     return True
 
-
-# ============================================================
-# INSIGHT VALIDATION
-# ============================================================
 
 def validate_insight_output(data):
 
@@ -430,6 +431,8 @@ def validate_improved_report(data):
         )
 
     return True
+
+
 def run_with_retry(
     request_id,
     stage_name,
@@ -502,11 +505,9 @@ def run_with_retry(
                 error=error
             )
 
-            # Do not retry permanent failures.
             if error_type == "non_retryable":
                 break
 
-            # Retry only if attempts remain.
             if attempt < max_attempts:
 
                 delay = calculate_retry_delay(
@@ -607,6 +608,7 @@ def run_with_retry(
         fallback_used=False
     )
 
+
 def smart_search(topic):
 
     result = web_search.invoke({
@@ -620,6 +622,7 @@ def smart_search(topic):
 
     return str(result)
 
+
 def extract_urls(text):
 
     urls = re.findall(
@@ -628,6 +631,7 @@ def extract_urls(text):
     )
 
     return list(set(urls))
+
 
 def rank_urls(urls):
 
@@ -686,9 +690,6 @@ def run_research_pipeline(topic):
 
     state["search_results"] = search_results
 
-    # Search is a critical dependency.
-    # If search fails, stop the pipeline.
-
     if search_results["status"] == "failed":
 
         log_event(
@@ -704,7 +705,6 @@ def run_research_pipeline(topic):
         return state
 
     search_data = search_results["data"]
-
 
     def scrape_operation():
 
@@ -742,10 +742,6 @@ def run_research_pipeline(topic):
         stage_name="URL Ranking + Scraping",
         operation=scrape_operation,
         validator=validate_scraped_output,
-
-        # FALLBACK:
-        # If scraping fails after retries,
-        # use the original search content.
         fallback=lambda: search_data
     )
 
@@ -753,11 +749,9 @@ def run_research_pipeline(topic):
 
     research_data = scraped_content["data"]
 
-
     reasoning = run_with_retry(
         request_id=request_id,
         stage_name="Reasoning",
-
         operation=lambda: reasoning_chain.invoke({
             "research": (
                 search_data
@@ -765,16 +759,13 @@ def run_research_pipeline(topic):
                 + research_data
             )
         }),
-
         validator=validate_reasoning_output,
-
         fallback="Reasoning unavailable."
     )
 
     state["reasoning"] = reasoning
 
     reasoning_data = reasoning["data"]
-
 
     print(
         "\nEVIDENCE INPUT PREVIEW:"
@@ -789,34 +780,14 @@ def run_research_pipeline(topic):
     )
 
     evidence = run_with_retry(
-
         request_id=request_id,
-
         stage_name="Evidence Extraction",
-
-        # IMPORTANT:
-        # Different LangChain structured-output
-        # implementations can return either:
-        #
-        # {"evidence": [...]}
-        #
-        # OR
-        #
-        # [...]
-        #
-        # normalize_evidence_output()
-        # handles both safely.
-
         operation=lambda: normalize_evidence_output(
             evidence_chain.invoke({
                 "research": research_data
             })
         ),
-
         validator=validate_evidence_output,
-
-        # If extraction fails after retries,
-        # continue with empty evidence.
         fallback=[]
     )
 
@@ -855,12 +826,8 @@ def run_research_pipeline(topic):
                 grounding_chain.invoke({
                     "source_content": research_data,
                     "claim": item["claim"],
-                    "supporting_text": item[
-                        "supporting_text"
-                    ],
-                    "source_url": item[
-                        "source_url"
-                    ]
+                    "supporting_text": item["supporting_text"],
+                    "source_url": item["source_url"]
                 })
             ),
 
@@ -868,9 +835,7 @@ def run_research_pipeline(topic):
 
             fallback={
                 "verified": False,
-                "reason": (
-                    "Grounding verification failed."
-                ),
+                "reason": "Grounding verification failed.",
                 "confidence": 0.0
             }
         )
@@ -879,23 +844,10 @@ def run_research_pipeline(topic):
 
         item["grounding"] = grounding_data
 
-        # Only accept evidence when:
-        #
-        # verified == True
-        #
-        # AND
-        #
-        # confidence >= 0.8
-
         if (
             grounding_data
-            and grounding_data.get(
-                "verified"
-            ) is True
-            and grounding_data.get(
-                "confidence",
-                0
-            ) >= 0.8
+            and grounding_data.get("verified") is True
+            and grounding_data.get("confidence", 0) >= 0.8
         ):
 
             verified_evidence.append(
@@ -941,6 +893,7 @@ def run_research_pipeline(topic):
         )
 
     else:
+
         insights = {
             "status": "skipped",
             "data": (
@@ -994,16 +947,10 @@ def run_research_pipeline(topic):
 
         validator=validate_report_output,
 
-        # No safe fallback for Writer.
-        # A report without successful generation
-        # should not be fabricated.
         fallback=None
     )
 
     state["report"] = report
-
-    # Writer is a critical dependency.
-    # Stop if it fails.
 
     if report["status"] == "failed":
 
@@ -1043,12 +990,10 @@ def run_research_pipeline(topic):
 
         validator=validate_critic_output,
 
-        # No separate critic fallback.
         fallback=None
     )
 
     state["feedback"] = feedback
-
 
     if feedback["status"] == "failed":
 
@@ -1093,9 +1038,6 @@ def run_research_pipeline(topic):
 
         validator=validate_improved_report,
 
-        # SAFE FALLBACK:
-        # If improvement fails,
-        # return the already valid original report.
         fallback=report_data
     )
 

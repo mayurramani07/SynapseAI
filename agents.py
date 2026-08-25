@@ -1,5 +1,5 @@
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.output_parsers import StrOutputParser, JsonOutputParser
+from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnableLambda
 from langchain_groq import ChatGroq
 from dotenv import load_dotenv
@@ -39,6 +39,34 @@ class EvidenceItem(BaseModel):
     ] = Field(
         description="Type of evidence"
     )
+
+
+class EvidenceExtraction(BaseModel):
+
+    evidence: list[EvidenceItem] = Field(
+        default_factory=list,
+        description="List of directly supported evidence items"
+    )
+
+
+class GroundingResult(BaseModel):
+
+    evidence_index: int = Field(
+        description="Position of the evidence item starting from 1"
+    )
+
+    verified: bool = Field(
+        description="Whether the evidence is directly supported"
+    )
+
+    reason: str = Field(
+        description="Reason for the verification result"
+    )
+
+    confidence: float = Field(
+        description="Confidence between 0 and 1"
+    )
+
 
 reasoning_prompt = ChatPromptTemplate.from_messages(
     [
@@ -96,10 +124,6 @@ reasoning_chain = (
 )
 
 
-# ============================================================
-# EVIDENCE EXTRACTION PROMPT
-# ============================================================
-
 evidence_prompt = ChatPromptTemplate.from_messages(
     [
         (
@@ -109,18 +133,18 @@ You are an evidence extraction system.
 
 Extract ONLY evidence directly supported by the provided research.
 
-Each evidence item MUST contain exactly these four fields:
+For every evidence item identify:
 
-claim
-supporting_text
-source_url
-evidence_type
+- claim
+- supporting_text
+- source_url
+- evidence_type
 
 Allowed evidence_type values:
 
-statistic
-factual_claim
-projection
+- statistic
+- factual_claim
+- projection
 
 STRICT RULES:
 
@@ -135,26 +159,10 @@ STRICT RULES:
    factual_claim
    projection
 8. Ignore opinions and unsupported statements.
-9. If no strong evidence exists, return an empty list.
-10. Return ONLY valid JSON.
-11. Do NOT return Markdown.
-12. Do NOT use code fences.
-13. Do NOT add explanations before or after the JSON.
-
-Return exactly:
-
-[
-  {{
-    "claim": "...",
-    "supporting_text": "...",
-    "source_url": "...",
-    "evidence_type": "statistic"
-  }}
-]
-
-If there is no strong evidence, return:
-
-[]
+9. If no strong evidence exists, return an empty evidence list.
+10. Extract a maximum of 8 evidence items.
+11. Keep supporting_text concise.
+12. Do not add explanations.
 """
         ),
 
@@ -166,92 +174,59 @@ Research:
 {research}
 
 Extract only strong, directly supported evidence.
-
-Return ONLY the JSON array.
 """
         )
     ]
 )
 
-evidence_raw_chain = (
-    evidence_prompt
-    | llm
-    | StrOutputParser()
+
+evidence_structured_llm = llm.with_structured_output(
+    EvidenceExtraction
 )
 
 
-def parse_and_validate_evidence(raw_output):
+def validate_structured_evidence(result):
 
-    if raw_output is None:
+    if result is None:
         raise ValueError(
             "Evidence extraction returned None"
         )
 
-    if not isinstance(raw_output, str):
-        raw_output = str(raw_output)
+    if isinstance(result, EvidenceExtraction):
+        evidence_items = result.evidence
 
-    text = raw_output.strip()
+    elif isinstance(result, dict):
 
-    if not text:
-        raise ValueError(
-            "Evidence extraction returned empty output"
-        )
-
-    if text.startswith("```"):
-
-        if text.startswith("```json"):
-            text = text[7:]
-
-        elif text.startswith("```"):
-            text = text[3:]
-
-        if text.endswith("```"):
-            text = text[:-3]
-
-        text = text.strip()
-
-    try:
-
-        parsed = json.loads(text)
-
-    except json.JSONDecodeError as error:
-
-        raise ValueError(
-            f"Invalid JSON returned by evidence extraction: {error}"
-        )
-
-
-    if isinstance(parsed, dict):
-
-        if "evidence" not in parsed:
+        if "evidence" not in result:
             raise ValueError(
-                "Evidence JSON object missing 'evidence' field"
+                "Evidence extraction missing 'evidence' field"
             )
 
-        parsed = parsed["evidence"]
+        evidence_items = result["evidence"]
 
-
-    if not isinstance(parsed, list):
-
+    else:
         raise ValueError(
-            "Evidence output must be a JSON list"
+            "Evidence extraction returned invalid structure"
+        )
+
+    if not isinstance(evidence_items, list):
+        raise ValueError(
+            "Evidence field must be a list"
         )
 
     validated = []
 
-    for index, item in enumerate(parsed):
-
-        if not isinstance(item, dict):
-
-            raise ValueError(
-                f"Evidence item {index + 1} must be an object"
-            )
+    for index, item in enumerate(evidence_items):
 
         try:
 
-            evidence_item = EvidenceItem.model_validate(
-                item
-            )
+            if isinstance(item, EvidenceItem):
+                evidence_item = item
+
+            else:
+                evidence_item = EvidenceItem.model_validate(
+                    item
+                )
 
         except ValidationError as error:
 
@@ -285,8 +260,11 @@ def parse_and_validate_evidence(raw_output):
 
 
 evidence_chain = (
-    evidence_raw_chain
-    | RunnableLambda(parse_and_validate_evidence)
+    evidence_prompt
+    | evidence_structured_llm
+    | RunnableLambda(
+        validate_structured_evidence
+    )
 )
 
 
@@ -297,29 +275,47 @@ grounding_prompt = ChatPromptTemplate.from_messages(
             """
 You are an evidence verification system.
 
-Your job is to determine whether an extracted claim is directly supported by the provided source content.
+Your job is to verify MULTIPLE extracted evidence items against the provided source content.
+
+Verify every evidence item independently.
 
 STRICT RULES:
 
-- Verify the claim ONLY against the provided source content.
-- Do NOT use outside knowledge.
-- Do NOT assume missing information.
-- The claim must be supported by the source.
-- The supporting_text must actually support the claim.
-- If the source does not support the claim, mark it as false.
-- Do not treat similar wording as sufficient evidence.
-- Preserve the original evidence information.
-- Return ONLY valid JSON.
+1. Verify each claim ONLY against the provided source content.
+2. Do NOT use outside knowledge.
+3. Do NOT assume missing information.
+4. The claim must be directly supported by the source content.
+5. The supporting_text must actually support the claim.
+6. If the source does not support the claim, mark it as false.
+7. Do not treat similar wording as sufficient evidence.
+8. Do not modify the original evidence.
+9. Verify each evidence item independently.
+10. Return exactly one verification result for every evidence item.
+11. evidence_index MUST correspond to the position of the evidence item in the provided list.
+12. evidence_index starts from 1.
+13. verified MUST be true or false.
+14. confidence MUST be between 0 and 1.
+15. Return ONLY valid JSON.
+16. Do NOT return Markdown.
+17. Do NOT use code fences.
+18. Do NOT add explanations before or after the JSON.
 
 Return exactly:
 
-{{
-  "verified": true,
-  "reason": "...",
-  "confidence": 0.0
-}}
+[
+  {{
+    "evidence_index": 1,
+    "verified": true,
+    "reason": "...",
+    "confidence": 0.95
+  }}
+]
 
-confidence must be between 0 and 1.
+Return one object for every evidence item.
+
+If there are no evidence items, return:
+
+[]
 """
         ),
 
@@ -330,33 +326,163 @@ SOURCE CONTENT:
 
 {source_content}
 
-EXTRACTED EVIDENCE:
+EXTRACTED EVIDENCE ITEMS:
 
-Claim:
+{evidence_items}
 
-{claim}
+Verify every evidence item independently.
 
-Supporting Text:
-
-{supporting_text}
-
-Source URL:
-
-{source_url}
-
-Determine whether the extracted claim is directly supported by the source content.
+Return ONLY the JSON array.
 """
         )
     ]
 )
 
 
-grounding_chain = (
+grounding_raw_chain = (
     grounding_prompt
     | llm
-    | JsonOutputParser()
+    | StrOutputParser()
 )
 
+
+def parse_and_validate_grounding(raw_output):
+
+    if raw_output is None:
+        raise ValueError(
+            "Grounding extraction returned None"
+        )
+
+    if not isinstance(raw_output, str):
+        raw_output = str(raw_output)
+
+    text = raw_output.strip()
+
+    if not text:
+        raise ValueError(
+            "Grounding output is empty"
+        )
+
+    if text.startswith("```"):
+
+        if text.startswith("```json"):
+            text = text[7:]
+
+        else:
+            text = text[3:]
+
+        if text.endswith("```"):
+            text = text[:-3]
+
+        text = text.strip()
+
+    try:
+
+        parsed = json.loads(text)
+
+    except json.JSONDecodeError as error:
+
+        raise ValueError(
+            f"Invalid grounding JSON: {error}"
+        )
+
+    if isinstance(parsed, dict):
+
+        if "grounding" in parsed:
+            parsed = parsed["grounding"]
+
+        elif "results" in parsed:
+            parsed = parsed["results"]
+
+        else:
+            parsed = [parsed]
+
+    if not isinstance(parsed, list):
+
+        raise ValueError(
+            "Grounding output must be a JSON list"
+        )
+
+    validated = []
+
+    for index, item in enumerate(parsed):
+
+        if not isinstance(item, dict):
+
+            raise ValueError(
+                f"Grounding item {index + 1} must be an object"
+            )
+
+        required_fields = [
+            "evidence_index",
+            "verified",
+            "reason",
+            "confidence"
+        ]
+
+        for field in required_fields:
+
+            if field not in item:
+
+                raise ValueError(
+                    f"Grounding item {index + 1} missing {field}"
+                )
+
+        evidence_index = item["evidence_index"]
+
+        if not isinstance(
+            evidence_index,
+            int
+        ) or evidence_index < 1:
+
+            raise ValueError(
+                f"Grounding item {index + 1} has invalid evidence_index"
+            )
+
+        if not isinstance(
+            item["verified"],
+            bool
+        ):
+
+            raise ValueError(
+                f"Grounding item {index + 1} has invalid verified value"
+            )
+
+        confidence = item["confidence"]
+
+        if not isinstance(
+            confidence,
+            (int, float)
+        ):
+
+            raise ValueError(
+                f"Grounding item {index + 1} has invalid confidence"
+            )
+
+        if not 0 <= confidence <= 1:
+
+            raise ValueError(
+                f"Grounding item {index + 1} confidence must be between 0 and 1"
+            )
+
+        validated.append(
+            {
+                "evidence_index": evidence_index,
+                "verified": item["verified"],
+                "reason": str(item["reason"]),
+                "confidence": float(confidence)
+            }
+        )
+
+    return validated
+
+
+grounding_chain = (
+    grounding_raw_chain
+    | RunnableLambda(
+        parse_and_validate_grounding
+    )
+)
 
 
 insight_prompt = ChatPromptTemplate.from_messages(
@@ -481,6 +607,7 @@ writer_chain = (
     | llm
     | StrOutputParser()
 )
+
 
 improver_prompt = ChatPromptTemplate.from_messages(
     [
