@@ -11,13 +11,57 @@ import re
 import time
 import json
 import random
+import logging
+import uuid
+from datetime import datetime, timezone
 
 MAX_ATTEMPTS = 2
 BASE_RETRY_DELAY = 1.0
 MAX_RETRY_DELAY = 8.0
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(message)s"
+)
 
-def stage_success(data, duration=None, attempts=1):
+logger = logging.getLogger("synapseai")
+
+
+def log_event(
+    request_id,
+    stage,
+    status,
+    attempt=None,
+    duration=None,
+    error_type=None,
+    error=None,
+    fallback_used=False
+):
+    event = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "request_id": request_id,
+        "stage": stage,
+        "status": status,
+        "attempt": attempt,
+        "duration": duration,
+        "error_type": error_type,
+        "error": str(error) if error else None,
+        "fallback_used": fallback_used
+    }
+
+    logger.info(
+        json.dumps(
+            event,
+            ensure_ascii=False
+        )
+    )
+
+
+def stage_success(
+    data,
+    duration=None,
+    attempts=1
+):
     return {
         "status": "success",
         "data": data,
@@ -89,7 +133,11 @@ def classify_error(error):
 
 
 def calculate_retry_delay(attempt):
-    exponential_delay = BASE_RETRY_DELAY * (2 ** (attempt - 1))
+    exponential_delay = (
+        BASE_RETRY_DELAY *
+        (2 ** (attempt - 1))
+    )
+
     jitter = random.uniform(0, 0.5)
 
     return min(
@@ -99,6 +147,7 @@ def calculate_retry_delay(attempt):
 
 
 def run_with_retry(
+    request_id,
     stage_name,
     operation,
     fallback=None,
@@ -106,6 +155,13 @@ def run_with_retry(
 ):
     start_time = time.time()
     last_error = None
+    attempt = 0
+
+    log_event(
+        request_id=request_id,
+        stage=stage_name,
+        status="started"
+    )
 
     for attempt in range(1, max_attempts + 1):
         try:
@@ -121,6 +177,14 @@ def run_with_retry(
                 2
             )
 
+            log_event(
+                request_id=request_id,
+                stage=stage_name,
+                status="success",
+                attempt=attempt,
+                duration=duration
+            )
+
             return stage_success(
                 data=result,
                 duration=duration,
@@ -131,30 +195,29 @@ def run_with_retry(
             last_error = error
             error_type = classify_error(error)
 
-            print(
-                f"{stage_name} attempt "
-                f"{attempt}/{max_attempts} failed: "
-                f"{error}"
-            )
-
-            print(
-                f"{stage_name} error type: "
-                f"{error_type}"
+            log_event(
+                request_id=request_id,
+                stage=stage_name,
+                status="error",
+                attempt=attempt,
+                error_type=error_type,
+                error=error
             )
 
             if error_type == "non_retryable":
-                print(
-                    f"{stage_name}: "
-                    f"non-retryable error"
-                )
                 break
 
             if attempt < max_attempts:
-                delay = calculate_retry_delay(attempt)
+                delay = calculate_retry_delay(
+                    attempt
+                )
 
-                print(
-                    f"{stage_name}: "
-                    f"retrying in {round(delay, 2)}s"
+                log_event(
+                    request_id=request_id,
+                    stage=stage_name,
+                    status="retrying",
+                    attempt=attempt,
+                    error_type=error_type
                 )
 
                 time.sleep(delay)
@@ -172,6 +235,17 @@ def run_with_retry(
                 else fallback
             )
 
+            log_event(
+                request_id=request_id,
+                stage=stage_name,
+                status="degraded",
+                attempt=attempt,
+                duration=duration,
+                error_type=classify_error(last_error),
+                error=last_error,
+                fallback_used=True
+            )
+
             return {
                 "status": "degraded",
                 "data": fallback_data,
@@ -182,12 +256,36 @@ def run_with_retry(
             }
 
         except Exception as fallback_error:
+            log_event(
+                request_id=request_id,
+                stage=stage_name,
+                status="failed",
+                attempt=attempt,
+                duration=duration,
+                error_type=classify_error(
+                    fallback_error
+                ),
+                error=fallback_error,
+                fallback_used=True
+            )
+
             return stage_failure(
                 error=fallback_error,
                 duration=duration,
                 attempts=attempt,
                 fallback_used=True
             )
+
+    log_event(
+        request_id=request_id,
+        stage=stage_name,
+        status="failed",
+        attempt=attempt,
+        duration=duration,
+        error_type=classify_error(last_error),
+        error=last_error,
+        fallback_used=False
+    )
 
     return stage_failure(
         error=last_error,
@@ -247,45 +345,40 @@ def rank_urls(urls):
 
 
 def run_research_pipeline(topic):
+    request_id = str(uuid.uuid4())
+    pipeline_start = time.time()
+
+    log_event(
+        request_id=request_id,
+        stage="pipeline",
+        status="started"
+    )
+
     state = {}
-    start_time = time.time()
 
-    print("\nAI Research System Started")
-    print("=" * 60)
-
-    print("\nSTEP 1 - Smart Search")
-
-    state["search_results"] = run_with_retry(
+    search_results = run_with_retry(
+        request_id=request_id,
         stage_name="Smart Search",
         operation=lambda: smart_search(topic),
         fallback=None
     )
 
-    print(
-        json.dumps(
-            state["search_results"],
-            indent=2,
-            ensure_ascii=False
-        )[:1000]
-    )
+    state["search_results"] = search_results
 
-    if state["search_results"]["status"] == "failed":
-        print(
-            "\nSearch failed. "
-            "Research pipeline cannot continue."
-        )
-
-        print(
-            "\nTotal Time:",
-            round(time.time() - start_time, 2),
-            "s"
+    if search_results["status"] == "failed":
+        log_event(
+            request_id=request_id,
+            stage="pipeline",
+            status="failed",
+            duration=round(
+                time.time() - pipeline_start,
+                2
+            )
         )
 
         return state
 
-    search_data = state["search_results"]["data"]
-
-    print("\nSTEP 2 - URL Ranking + Scraping")
+    search_data = search_results["data"]
 
     def scrape_operation():
         urls = rank_urls(
@@ -299,8 +392,6 @@ def run_research_pipeline(topic):
 
         urls_str = ", ".join(urls)
 
-        print("\nURLs:", urls_str)
-
         scraped = scrape_urls.invoke({
             "urls": urls_str
         })
@@ -312,25 +403,19 @@ def run_research_pipeline(topic):
 
         return scraped
 
-    state["scraped_content"] = run_with_retry(
+    scraped_content = run_with_retry(
+        request_id=request_id,
         stage_name="URL Ranking + Scraping",
         operation=scrape_operation,
         fallback=lambda: search_data
     )
 
-    print(
-        json.dumps(
-            state["scraped_content"],
-            indent=2,
-            ensure_ascii=False
-        )[:1200]
-    )
+    state["scraped_content"] = scraped_content
 
-    research_data = state["scraped_content"]["data"]
+    research_data = scraped_content["data"]
 
-    print("\nSTEP 3 - Reasoning")
-
-    state["reasoning"] = run_with_retry(
+    reasoning = run_with_retry(
+        request_id=request_id,
         stage_name="Reasoning",
         operation=lambda: reasoning_chain.invoke({
             "research": (
@@ -342,19 +427,11 @@ def run_research_pipeline(topic):
         fallback="Reasoning unavailable."
     )
 
-    print(
-        json.dumps(
-            state["reasoning"],
-            indent=2,
-            ensure_ascii=False
-        )[:1000]
-    )
+    state["reasoning"] = reasoning
+    reasoning_data = reasoning["data"]
 
-    reasoning_data = state["reasoning"]["data"]
-
-    print("\nSTEP 4 - Evidence Extraction")
-
-    state["evidence"] = run_with_retry(
+    evidence = run_with_retry(
+        request_id=request_id,
         stage_name="Evidence Extraction",
         operation=lambda: evidence_chain.invoke({
             "research": research_data
@@ -362,20 +439,12 @@ def run_research_pipeline(topic):
         fallback=[]
     )
 
-    print(
-        json.dumps(
-            state["evidence"],
-            indent=2,
-            ensure_ascii=False
-        )[:1500]
-    )
-
-    evidence_data = state["evidence"]["data"]
-
-    print("\nSTEP 5 - Insight Generation")
+    state["evidence"] = evidence
+    evidence_data = evidence["data"]
 
     if evidence_data:
-        state["insights"] = run_with_retry(
+        insights = run_with_retry(
+            request_id=request_id,
             stage_name="Insight Generation",
             operation=lambda: insight_chain.invoke({
                 "research": research_data,
@@ -390,7 +459,7 @@ def run_research_pipeline(topic):
             )
         )
     else:
-        state["insights"] = {
+        insights = {
             "status": "skipped",
             "data": (
                 "Insights skipped because no "
@@ -402,19 +471,18 @@ def run_research_pipeline(topic):
             "fallback_used": True
         }
 
-    print(
-        json.dumps(
-            state["insights"],
-            indent=2,
-            ensure_ascii=False
-        )[:1000]
-    )
+        log_event(
+            request_id=request_id,
+            stage="Insight Generation",
+            status="skipped",
+            fallback_used=True
+        )
 
-    insights_data = state["insights"]["data"]
+    state["insights"] = insights
+    insights_data = insights["data"]
 
-    print("\nSTEP 6 - Writer")
-
-    state["report"] = run_with_retry(
+    report = run_with_retry(
+        request_id=request_id,
         stage_name="Writer",
         operation=lambda: writer_chain.invoke({
             "topic": topic,
@@ -433,35 +501,27 @@ def run_research_pipeline(topic):
         fallback=None
     )
 
-    print(
-        json.dumps(
-            state["report"],
-            indent=2,
-            ensure_ascii=False
-        )[:1500]
-    )
+    state["report"] = report
 
-    if state["report"]["status"] == "failed":
-        print(
-            "\nWriter failed. "
-            "Cannot continue to critic/improver."
-        )
+    if report["status"] == "failed":
+        state["final_report"] = report
 
-        state["final_report"] = state["report"]
-
-        print(
-            "\nTotal Time:",
-            round(time.time() - start_time, 2),
-            "s"
+        log_event(
+            request_id=request_id,
+            stage="pipeline",
+            status="failed",
+            duration=round(
+                time.time() - pipeline_start,
+                2
+            )
         )
 
         return state
 
-    report_data = state["report"]["data"]
+    report_data = report["data"]
 
-    print("\nSTEP 7 - Critic")
-
-    state["feedback"] = run_with_retry(
+    feedback = run_with_retry(
+        request_id=request_id,
         stage_name="Critic",
         operation=lambda: critic_chain.invoke({
             "report": report_data,
@@ -473,42 +533,35 @@ def run_research_pipeline(topic):
         fallback=None
     )
 
-    print(
-        json.dumps(
-            state["feedback"],
-            indent=2,
-            ensure_ascii=False
-        )[:1500]
-    )
+    state["feedback"] = feedback
 
-    if state["feedback"]["status"] == "failed":
+    if feedback["status"] == "failed":
         state["final_report"] = {
             "status": "degraded",
             "data": report_data,
-            "error": state["feedback"]["error"],
-            "attempts": state["feedback"]["attempts"],
-            "duration": state["feedback"]["duration"],
+            "error": feedback["error"],
+            "attempts": feedback["attempts"],
+            "duration": feedback["duration"],
             "fallback_used": True
         }
 
-        print(
-            "\nCritic unavailable. "
-            "Returning original report."
-        )
-
-        print(
-            "\nTotal Time:",
-            round(time.time() - start_time, 2),
-            "s"
+        log_event(
+            request_id=request_id,
+            stage="pipeline",
+            status="degraded",
+            duration=round(
+                time.time() - pipeline_start,
+                2
+            ),
+            fallback_used=True
         )
 
         return state
 
-    feedback_data = state["feedback"]["data"]
+    feedback_data = feedback["data"]
 
-    print("\nSTEP 8 - Improver")
-
-    state["final_report"] = run_with_retry(
+    final_report = run_with_retry(
+        request_id=request_id,
         stage_name="Improver",
         operation=lambda: improver_chain.invoke({
             "report": report_data,
@@ -517,20 +570,18 @@ def run_research_pipeline(topic):
         fallback=report_data
     )
 
-    print(
-        json.dumps(
-            state["final_report"],
-            indent=2,
-            ensure_ascii=False
-        )[:1500]
+    state["final_report"] = final_report
+
+    total_duration = round(
+        time.time() - pipeline_start,
+        2
     )
 
-    print("\nDONE")
-
-    print(
-        "Total Time:",
-        round(time.time() - start_time, 2),
-        "s"
+    log_event(
+        request_id=request_id,
+        stage="pipeline",
+        status="completed",
+        duration=total_duration
     )
 
     return state
