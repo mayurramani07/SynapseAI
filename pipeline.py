@@ -26,7 +26,6 @@ MAX_ATTEMPTS = 2
 BASE_RETRY_DELAY = 1.0
 MAX_RETRY_DELAY = 8.0
 
-
 logging.basicConfig(
     level=logging.INFO,
     format="%(message)s"
@@ -121,6 +120,20 @@ def classify_error(error):
         "model_not_found",
         "does not exist or you do not have access"
     ]
+
+    non_retryable_limit_errors = [
+        "tpd limit",
+        "tokens per day",
+        "daily token limit",
+        "daily limit",
+        "tokens used",
+        "requested tokens",
+        "rate limit reached for model"
+    ]
+
+    for pattern in non_retryable_limit_errors:
+        if pattern in error_text:
+            return "non_retryable"
 
     retryable_errors = [
         "timeout",
@@ -793,7 +806,7 @@ def run_research_pipeline(topic):
 
     state["evidence"] = evidence
 
-    evidence_data = evidence["data"]
+    evidence_data = evidence["data"] or []
 
     print(
         "\nRAW EVIDENCE OUTPUT:"
@@ -814,78 +827,68 @@ def run_research_pipeline(topic):
 
     verified_evidence = []
 
-    for item in evidence_data:
+    if evidence_data:
 
-        grounding = run_with_retry(
+        for item in evidence_data:
 
-            request_id=request_id,
-
-            stage_name="Evidence Grounding",
-
-            operation=lambda item=item: (
-                grounding_chain.invoke({
+            grounding = run_with_retry(
+                request_id=request_id,
+                stage_name="Evidence Grounding",
+                operation=lambda item=item: grounding_chain.invoke({
                     "source_content": research_data,
-                    "claim": item["claim"],
-                    "supporting_text": item["supporting_text"],
-                    "source_url": item["source_url"]
-                })
-            ),
-
-            validator=validate_grounding_output,
-
-            fallback={
-                "verified": False,
-                "reason": "Grounding verification failed.",
-                "confidence": 0.0
-            }
-        )
-
-        grounding_data = grounding["data"]
-
-        item["grounding"] = grounding_data
-
-        if (
-            grounding_data
-            and grounding_data.get("verified") is True
-            and grounding_data.get("confidence", 0) >= 0.8
-        ):
-
-            verified_evidence.append(
-                item
+                    "evidence_items": json.dumps(
+                        [item],
+                        ensure_ascii=False
+                    )
+                }),
+                validator=validate_grounding_output,
+                fallback={
+                    "verified": False,
+                    "reason": "Grounding verification failed.",
+                    "confidence": 0.0
+                }
             )
 
-    evidence_data = verified_evidence
+            grounding_data = grounding.get(
+                "data"
+            ) or {}
+
+            item = item.copy()
+
+            item["grounding"] = grounding_data
+
+            if (
+                grounding_data.get("verified") is True
+                and grounding_data.get("confidence", 0) >= 0.8
+            ):
+                verified_evidence.append(
+                    item
+                )
 
     state["verified_evidence"] = {
         "status": "success",
-        "data": evidence_data,
+        "data": verified_evidence,
         "error": None,
         "attempts": 1,
         "duration": None,
         "fallback_used": False
     }
 
+    evidence_data = verified_evidence
+
     if evidence_data:
 
         insights = run_with_retry(
-
             request_id=request_id,
-
             stage_name="Insight Generation",
-
-            operation=lambda: (
-                insight_chain.invoke({
-                    "research": research_data,
-
-                    "evidence": json.dumps(
-                        evidence_data,
-                        ensure_ascii=False
-                    )
-                })
-            ),
-
+            operation=lambda: insight_chain.invoke({
+                "research": research_data,
+                "evidence": json.dumps(
+                    evidence_data,
+                    ensure_ascii=False
+                )
+            }),
             validator=validate_insight_output,
-
             fallback=(
                 "Insights unavailable because "
                 "insight generation failed."
@@ -918,35 +921,23 @@ def run_research_pipeline(topic):
     insights_data = insights["data"]
 
     report = run_with_retry(
-
         request_id=request_id,
-
         stage_name="Writer",
-
-        operation=lambda: (
-            writer_chain.invoke({
-
-                "topic": topic,
-
-                "research": (
-                    search_data
-                    + "\n\n"
-                    + research_data
-                ),
-
-                "reasoning": reasoning_data,
-
-                "evidence": json.dumps(
-                    evidence_data,
-                    ensure_ascii=False
-                ),
-
-                "insights": insights_data
-            })
-        ),
-
+        operation=lambda: writer_chain.invoke({
+            "topic": topic,
+            "research": (
+                search_data
+                + "\n\n"
+                + research_data
+            ),
+            "reasoning": reasoning_data,
+            "evidence": json.dumps(
+                evidence_data,
+                ensure_ascii=False
+            ),
+            "insights": insights_data
+        }),
         validator=validate_report_output,
-
         fallback=None
     )
 
@@ -971,25 +962,16 @@ def run_research_pipeline(topic):
     report_data = report["data"]
 
     feedback = run_with_retry(
-
         request_id=request_id,
-
         stage_name="Critic",
-
-        operation=lambda: (
-            critic_chain.invoke({
-
-                "report": report_data,
-
-                "evidence": json.dumps(
-                    evidence_data,
-                    ensure_ascii=False
-                )
-            })
-        ),
-
+        operation=lambda: critic_chain.invoke({
+            "report": report_data,
+            "evidence": json.dumps(
+                evidence_data,
+                ensure_ascii=False
+            )
+        }),
         validator=validate_critic_output,
-
         fallback=None
     )
 
@@ -1022,22 +1004,13 @@ def run_research_pipeline(topic):
     feedback_data = feedback["data"]
 
     final_report = run_with_retry(
-
         request_id=request_id,
-
         stage_name="Improver",
-
-        operation=lambda: (
-            improver_chain.invoke({
-
-                "report": report_data,
-
-                "feedback": feedback_data
-            })
-        ),
-
+        operation=lambda: improver_chain.invoke({
+            "report": report_data,
+            "feedback": feedback_data
+        }),
         validator=validate_improved_report,
-
         fallback=report_data
     )
 
