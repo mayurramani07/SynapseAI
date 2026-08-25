@@ -264,27 +264,84 @@ Return improved report.
 improver_chain = improver_prompt | llm | StrOutputParser()
 
 
+# critic_prompt = ChatPromptTemplate.from_messages([
+#     (
+#         "system",
+#         """You are a strict evaluator.
+
+# Focus on:
+# - depth
+# - reasoning
+# - evidence usage
+# - structure
+# - unsupported claims
+
+# Be critical.
+# """
+#     ),
+
+#     (
+#         "human",
+#         """Evaluate:
+
+# {report}
+
+# Return:
+
+# Score: X/10
+
+# Strengths:
+# - ...
+
+# Weaknesses:
+# - ...
+
+# Improvements:
+# - ...
+
+# Verdict:
+# ...
+# """
+#     )
+# ])
+
+# critic_chain = critic_prompt | llm | StrOutputParser()
+
 critic_prompt = ChatPromptTemplate.from_messages([
     (
         "system",
-        """You are a strict evaluator.
+        """You are a strict research evaluator.
+
+Evaluate the report against the provided evidence.
 
 Focus on:
 - depth
 - reasoning
 - evidence usage
-- structure
+- source grounding
 - unsupported claims
+- structure
 
-Be critical.
+STRICT RULES:
+- Do NOT assume unsupported claims are true.
+- Identify claims that are not supported by the provided evidence.
+- Identify hallucinated statistics or sources.
+- Identify evidence that is used incorrectly.
+- Be critical.
 """
     ),
 
     (
         "human",
-        """Evaluate:
+        """Evaluate the following research report.
+
+Report:
 
 {report}
+
+Verified Evidence:
+
+{evidence}
 
 Return:
 
@@ -294,6 +351,12 @@ Strengths:
 - ...
 
 Weaknesses:
+- ...
+
+Unsupported Claims:
+- ...
+
+Evidence Issues:
 - ...
 
 Improvements:

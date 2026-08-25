@@ -14,6 +14,9 @@ import random
 import logging
 import uuid
 from datetime import datetime, timezone
+from pydantic import BaseModel, ValidationError
+from typing import Literal
+from urllib.parse import urlparse
 
 MAX_ATTEMPTS = 2
 BASE_RETRY_DELAY = 1.0
@@ -25,6 +28,17 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger("synapseai")
+
+
+class EvidenceItem(BaseModel):
+    claim: str
+    supporting_text: str
+    source_url: str
+    evidence_type: Literal[
+        "statistic",
+        "factual_claim",
+        "projection"
+    ]
 
 
 def log_event(
@@ -146,10 +160,188 @@ def calculate_retry_delay(attempt):
     )
 
 
+def validate_search_output(data):
+    if not isinstance(data, str):
+        raise ValueError(
+            "Search output must be a string"
+        )
+
+    if not data.strip():
+        raise ValueError(
+            "Search output is empty"
+        )
+
+    if "No high-quality results found" in data:
+        raise ValueError(
+            "Search returned no high-quality results"
+        )
+
+    return True
+
+
+def validate_scraped_output(data):
+    if not isinstance(data, str):
+        raise ValueError(
+            "Scraped content must be a string"
+        )
+
+    if not data.strip():
+        raise ValueError(
+            "Scraped content is empty"
+        )
+
+    if "No content could be scraped" in data:
+        raise ValueError(
+            "No content could be scraped"
+        )
+
+    return True
+
+
+def validate_reasoning_output(data):
+    if not isinstance(data, str):
+        raise ValueError(
+            "Reasoning output must be a string"
+        )
+
+    if not data.strip():
+        raise ValueError(
+            "Reasoning output is empty"
+        )
+
+    return True
+
+
+def validate_source_url(url):
+    if not isinstance(url, str):
+        raise ValueError(
+            "source_url must be a string"
+        )
+
+    url = url.strip()
+
+    if not url:
+        raise ValueError(
+            "source_url cannot be empty"
+        )
+
+    parsed = urlparse(url)
+
+    if parsed.scheme not in {"http", "https"}:
+        raise ValueError(
+            "source_url must use HTTP or HTTPS"
+        )
+
+    if not parsed.netloc:
+        raise ValueError(
+            "source_url must contain a valid domain"
+        )
+
+    return True
+
+
+def validate_evidence_output(data):
+    if not isinstance(data, list):
+        raise ValueError(
+            "Evidence output must be a list"
+        )
+
+    if not data:
+        return True
+
+    for item in data:
+        if not isinstance(item, dict):
+            raise ValueError(
+                "Evidence item must be an object"
+            )
+
+        try:
+            validated_item = EvidenceItem.model_validate(
+                item
+            )
+        except ValidationError as error:
+            raise ValueError(
+                f"Invalid evidence schema: {error}"
+            )
+
+        if not validated_item.claim.strip():
+            raise ValueError(
+                "Evidence claim cannot be empty"
+            )
+
+        if not validated_item.supporting_text.strip():
+            raise ValueError(
+                "Evidence supporting_text cannot be empty"
+            )
+
+        validate_source_url(
+            validated_item.source_url
+        )
+
+    return True
+
+
+def validate_insight_output(data):
+    if not isinstance(data, str):
+        raise ValueError(
+            "Insight output must be a string"
+        )
+
+    if not data.strip():
+        raise ValueError(
+            "Insight output is empty"
+        )
+
+    return True
+
+
+def validate_report_output(data):
+    if not isinstance(data, str):
+        raise ValueError(
+            "Report output must be a string"
+        )
+
+    if not data.strip():
+        raise ValueError(
+            "Report output is empty"
+        )
+
+    return True
+
+
+def validate_critic_output(data):
+    if not isinstance(data, str):
+        raise ValueError(
+            "Critic output must be a string"
+        )
+
+    if not data.strip():
+        raise ValueError(
+            "Critic output is empty"
+        )
+
+    return True
+
+
+def validate_improved_report(data):
+    if not isinstance(data, str):
+        raise ValueError(
+            "Improved report must be a string"
+        )
+
+    if not data.strip():
+        raise ValueError(
+            "Improved report is empty"
+        )
+
+    return True
+
+
 def run_with_retry(
     request_id,
     stage_name,
     operation,
+    validator=None,
     fallback=None,
     max_attempts=MAX_ATTEMPTS
 ):
@@ -171,6 +363,9 @@ def run_with_retry(
                 raise ValueError(
                     f"{stage_name} returned None"
                 )
+
+            if validator:
+                validator(result)
 
             duration = round(
                 time.time() - start_time,
@@ -235,13 +430,18 @@ def run_with_retry(
                 else fallback
             )
 
+            if validator:
+                validator(fallback_data)
+
             log_event(
                 request_id=request_id,
                 stage=stage_name,
                 status="degraded",
                 attempt=attempt,
                 duration=duration,
-                error_type=classify_error(last_error),
+                error_type=classify_error(
+                    last_error
+                ),
                 error=last_error,
                 fallback_used=True
             )
@@ -282,7 +482,9 @@ def run_with_retry(
         status="failed",
         attempt=attempt,
         duration=duration,
-        error_type=classify_error(last_error),
+        error_type=classify_error(
+            last_error
+        ),
         error=last_error,
         fallback_used=False
     )
@@ -360,6 +562,7 @@ def run_research_pipeline(topic):
         request_id=request_id,
         stage_name="Smart Search",
         operation=lambda: smart_search(topic),
+        validator=validate_search_output,
         fallback=None
     )
 
@@ -407,6 +610,7 @@ def run_research_pipeline(topic):
         request_id=request_id,
         stage_name="URL Ranking + Scraping",
         operation=scrape_operation,
+        validator=validate_scraped_output,
         fallback=lambda: search_data
     )
 
@@ -424,10 +628,12 @@ def run_research_pipeline(topic):
                 + research_data
             )
         }),
+        validator=validate_reasoning_output,
         fallback="Reasoning unavailable."
     )
 
     state["reasoning"] = reasoning
+
     reasoning_data = reasoning["data"]
 
     evidence = run_with_retry(
@@ -436,10 +642,12 @@ def run_research_pipeline(topic):
         operation=lambda: evidence_chain.invoke({
             "research": research_data
         }),
+        validator=validate_evidence_output,
         fallback=[]
     )
 
     state["evidence"] = evidence
+
     evidence_data = evidence["data"]
 
     if evidence_data:
@@ -453,6 +661,7 @@ def run_research_pipeline(topic):
                     ensure_ascii=False
                 )
             }),
+            validator=validate_insight_output,
             fallback=(
                 "Insights unavailable because "
                 "insight generation failed."
@@ -479,6 +688,7 @@ def run_research_pipeline(topic):
         )
 
     state["insights"] = insights
+
     insights_data = insights["data"]
 
     report = run_with_retry(
@@ -498,6 +708,7 @@ def run_research_pipeline(topic):
             ),
             "insights": insights_data
         }),
+        validator=validate_report_output,
         fallback=None
     )
 
@@ -530,6 +741,7 @@ def run_research_pipeline(topic):
                 ensure_ascii=False
             )
         }),
+        validator=validate_critic_output,
         fallback=None
     )
 
@@ -567,6 +779,7 @@ def run_research_pipeline(topic):
             "report": report_data,
             "feedback": feedback_data
         }),
+        validator=validate_improved_report,
         fallback=report_data
     )
 
