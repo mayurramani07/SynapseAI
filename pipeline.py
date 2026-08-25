@@ -4,15 +4,19 @@ from agents import (
     evidence_chain,
     insight_chain,
     reasoning_chain,
-    improver_chain
+    improver_chain,
+    grounding_chain
 )
+
 from tools import web_search, scrape_urls
+
 import re
 import time
 import json
 import random
 import logging
 import uuid
+
 from datetime import datetime, timezone
 from pydantic import BaseModel, ValidationError
 from typing import Literal
@@ -21,6 +25,7 @@ from urllib.parse import urlparse
 MAX_ATTEMPTS = 2
 BASE_RETRY_DELAY = 1.0
 MAX_RETRY_DELAY = 8.0
+
 
 logging.basicConfig(
     level=logging.INFO,
@@ -69,7 +74,6 @@ def log_event(
             ensure_ascii=False
         )
     )
-
 
 def stage_success(
     data,
@@ -143,6 +147,7 @@ def classify_error(error):
         if pattern in error_text:
             return "retryable"
 
+    # Unknown/transient errors are treated as retryable.
     return "retryable"
 
 
@@ -178,7 +183,6 @@ def validate_search_output(data):
 
     return True
 
-
 def validate_scraped_output(data):
     if not isinstance(data, str):
         raise ValueError(
@@ -196,7 +200,6 @@ def validate_scraped_output(data):
         )
 
     return True
-
 
 def validate_reasoning_output(data):
     if not isinstance(data, str):
@@ -241,15 +244,16 @@ def validate_source_url(url):
 
 
 def validate_evidence_output(data):
+
     if not isinstance(data, list):
         raise ValueError(
             "Evidence output must be a list"
         )
-
     if not data:
         return True
 
     for item in data:
+
         if not isinstance(item, dict):
             raise ValueError(
                 "Evidence item must be an object"
@@ -259,6 +263,7 @@ def validate_evidence_output(data):
             validated_item = EvidenceItem.model_validate(
                 item
             )
+
         except ValidationError as error:
             raise ValueError(
                 f"Invalid evidence schema: {error}"
@@ -281,7 +286,94 @@ def validate_evidence_output(data):
     return True
 
 
+def normalize_evidence_output(data):
+    if isinstance(data, dict):
+
+        evidence = data.get(
+            "evidence",
+            []
+        )
+
+        if evidence is None:
+            return []
+
+        if not isinstance(evidence, list):
+            raise ValueError(
+                "Evidence 'evidence' field must be a list"
+            )
+
+        return evidence
+    if isinstance(data, list):
+        return data
+
+    # Anything else is invalid.
+    raise ValueError(
+        "Unexpected evidence output type: "
+        f"{type(data).__name__}"
+    )
+
+def validate_grounding_output(data):
+
+    if not isinstance(data, dict):
+        raise ValueError(
+            "Grounding output must be an object"
+        )
+
+    if "verified" not in data:
+        raise ValueError(
+            "Grounding output missing verified field"
+        )
+
+    if not isinstance(
+        data["verified"],
+        bool
+    ):
+        raise ValueError(
+            "verified must be boolean"
+        )
+
+    if "reason" not in data:
+        raise ValueError(
+            "Grounding output missing reason"
+        )
+
+    if not isinstance(
+        data["reason"],
+        str
+    ):
+        raise ValueError(
+            "reason must be a string"
+        )
+
+    if "confidence" not in data:
+        raise ValueError(
+            "Grounding output missing confidence"
+        )
+
+    confidence = data["confidence"]
+
+    if not isinstance(
+        confidence,
+        (int, float)
+    ):
+        raise ValueError(
+            "confidence must be numeric"
+        )
+
+    if not 0 <= confidence <= 1:
+        raise ValueError(
+            "confidence must be between 0 and 1"
+        )
+
+    return True
+
+
+# ============================================================
+# INSIGHT VALIDATION
+# ============================================================
+
 def validate_insight_output(data):
+
     if not isinstance(data, str):
         raise ValueError(
             "Insight output must be a string"
@@ -296,6 +388,7 @@ def validate_insight_output(data):
 
 
 def validate_report_output(data):
+
     if not isinstance(data, str):
         raise ValueError(
             "Report output must be a string"
@@ -310,6 +403,7 @@ def validate_report_output(data):
 
 
 def validate_critic_output(data):
+
     if not isinstance(data, str):
         raise ValueError(
             "Critic output must be a string"
@@ -324,6 +418,7 @@ def validate_critic_output(data):
 
 
 def validate_improved_report(data):
+
     if not isinstance(data, str):
         raise ValueError(
             "Improved report must be a string"
@@ -335,8 +430,6 @@ def validate_improved_report(data):
         )
 
     return True
-
-
 def run_with_retry(
     request_id,
     stage_name,
@@ -345,6 +438,7 @@ def run_with_retry(
     fallback=None,
     max_attempts=MAX_ATTEMPTS
 ):
+
     start_time = time.time()
     last_error = None
     attempt = 0
@@ -355,8 +449,13 @@ def run_with_retry(
         status="started"
     )
 
-    for attempt in range(1, max_attempts + 1):
+    for attempt in range(
+        1,
+        max_attempts + 1
+    ):
+
         try:
+
             result = operation()
 
             if result is None:
@@ -387,8 +486,12 @@ def run_with_retry(
             )
 
         except Exception as error:
+
             last_error = error
-            error_type = classify_error(error)
+
+            error_type = classify_error(
+                error
+            )
 
             log_event(
                 request_id=request_id,
@@ -399,10 +502,13 @@ def run_with_retry(
                 error=error
             )
 
+            # Do not retry permanent failures.
             if error_type == "non_retryable":
                 break
 
+            # Retry only if attempts remain.
             if attempt < max_attempts:
+
                 delay = calculate_retry_delay(
                     attempt
                 )
@@ -423,7 +529,9 @@ def run_with_retry(
     )
 
     if fallback is not None:
+
         try:
+
             fallback_data = (
                 fallback()
                 if callable(fallback)
@@ -431,7 +539,9 @@ def run_with_retry(
             )
 
             if validator:
-                validator(fallback_data)
+                validator(
+                    fallback_data
+                )
 
             log_event(
                 request_id=request_id,
@@ -456,6 +566,7 @@ def run_with_retry(
             }
 
         except Exception as fallback_error:
+
             log_event(
                 request_id=request_id,
                 stage=stage_name,
@@ -496,8 +607,8 @@ def run_with_retry(
         fallback_used=False
     )
 
-
 def smart_search(topic):
+
     result = web_search.invoke({
         "query": topic
     })
@@ -509,8 +620,8 @@ def smart_search(topic):
 
     return str(result)
 
-
 def extract_urls(text):
+
     urls = re.findall(
         r'https?://\S+',
         text
@@ -518,8 +629,8 @@ def extract_urls(text):
 
     return list(set(urls))
 
-
 def rank_urls(urls):
+
     priority = {
         ".gov": 5,
         ".edu": 5,
@@ -533,6 +644,7 @@ def rank_urls(urls):
     }
 
     def score(url):
+
         return sum(
             value
             for domain, value in priority.items()
@@ -547,7 +659,11 @@ def rank_urls(urls):
 
 
 def run_research_pipeline(topic):
-    request_id = str(uuid.uuid4())
+
+    request_id = str(
+        uuid.uuid4()
+    )
+
     pipeline_start = time.time()
 
     log_event(
@@ -561,14 +677,20 @@ def run_research_pipeline(topic):
     search_results = run_with_retry(
         request_id=request_id,
         stage_name="Smart Search",
-        operation=lambda: smart_search(topic),
+        operation=lambda: smart_search(
+            topic
+        ),
         validator=validate_search_output,
         fallback=None
     )
 
     state["search_results"] = search_results
 
+    # Search is a critical dependency.
+    # If search fails, stop the pipeline.
+
     if search_results["status"] == "failed":
+
         log_event(
             request_id=request_id,
             stage="pipeline",
@@ -583,9 +705,13 @@ def run_research_pipeline(topic):
 
     search_data = search_results["data"]
 
+
     def scrape_operation():
+
         urls = rank_urls(
-            extract_urls(search_data)
+            extract_urls(
+                search_data
+            )
         )
 
         if not urls:
@@ -593,13 +719,18 @@ def run_research_pipeline(topic):
                 "No valid URLs found in search results"
             )
 
-        urls_str = ", ".join(urls)
+        urls_str = ", ".join(
+            urls
+        )
 
         scraped = scrape_urls.invoke({
             "urls": urls_str
         })
 
-        if not scraped or not scraped.strip():
+        if (
+            not scraped
+            or not scraped.strip()
+        ):
             raise ValueError(
                 "Scraper returned empty content"
             )
@@ -611,6 +742,10 @@ def run_research_pipeline(topic):
         stage_name="URL Ranking + Scraping",
         operation=scrape_operation,
         validator=validate_scraped_output,
+
+        # FALLBACK:
+        # If scraping fails after retries,
+        # use the original search content.
         fallback=lambda: search_data
     )
 
@@ -618,9 +753,11 @@ def run_research_pipeline(topic):
 
     research_data = scraped_content["data"]
 
+
     reasoning = run_with_retry(
         request_id=request_id,
         stage_name="Reasoning",
+
         operation=lambda: reasoning_chain.invoke({
             "research": (
                 search_data
@@ -628,7 +765,9 @@ def run_research_pipeline(topic):
                 + research_data
             )
         }),
+
         validator=validate_reasoning_output,
+
         fallback="Reasoning unavailable."
     )
 
@@ -636,51 +775,171 @@ def run_research_pipeline(topic):
 
     reasoning_data = reasoning["data"]
 
+
+    print(
+        "\nEVIDENCE INPUT PREVIEW:"
+    )
+
+    print(
+        research_data[:5000]
+    )
+
+    print(
+        "\n" + "=" * 80
+    )
+
     evidence = run_with_retry(
+
         request_id=request_id,
+
         stage_name="Evidence Extraction",
-        operation=lambda: evidence_chain.invoke({
-            "research": research_data
-        }),
+
+        # IMPORTANT:
+        # Different LangChain structured-output
+        # implementations can return either:
+        #
+        # {"evidence": [...]}
+        #
+        # OR
+        #
+        # [...]
+        #
+        # normalize_evidence_output()
+        # handles both safely.
+
+        operation=lambda: normalize_evidence_output(
+            evidence_chain.invoke({
+                "research": research_data
+            })
+        ),
+
         validator=validate_evidence_output,
+
+        # If extraction fails after retries,
+        # continue with empty evidence.
         fallback=[]
     )
-#     evidence = run_with_retry(
-#     request_id=request_id,
-#     stage_name="Evidence Extraction",
-#     operation=lambda: [
-#         {
-#             "claim": "Test claim",
-#             "supporting_text": "Test supporting text",
-#             "source_url": "not-a-valid-url",
-#             "evidence_type": "invalid_type"
-#         }
-#     ],
-#     validator=validate_evidence_output,
-#     fallback=[]
-# )
 
     state["evidence"] = evidence
 
     evidence_data = evidence["data"]
 
-    if evidence_data:
-        insights = run_with_retry(
+    print(
+        "\nRAW EVIDENCE OUTPUT:"
+    )
+
+    print(
+        json.dumps(
+            evidence_data,
+            indent=2,
+            ensure_ascii=False
+        )
+    )
+
+    print(
+        f"\nExtracted Evidence Count: "
+        f"{len(evidence_data)}"
+    )
+
+    verified_evidence = []
+
+    for item in evidence_data:
+
+        grounding = run_with_retry(
+
             request_id=request_id,
+
+            stage_name="Evidence Grounding",
+
+            operation=lambda item=item: (
+                grounding_chain.invoke({
+                    "source_content": research_data,
+                    "claim": item["claim"],
+                    "supporting_text": item[
+                        "supporting_text"
+                    ],
+                    "source_url": item[
+                        "source_url"
+                    ]
+                })
+            ),
+
+            validator=validate_grounding_output,
+
+            fallback={
+                "verified": False,
+                "reason": (
+                    "Grounding verification failed."
+                ),
+                "confidence": 0.0
+            }
+        )
+
+        grounding_data = grounding["data"]
+
+        item["grounding"] = grounding_data
+
+        # Only accept evidence when:
+        #
+        # verified == True
+        #
+        # AND
+        #
+        # confidence >= 0.8
+
+        if (
+            grounding_data
+            and grounding_data.get(
+                "verified"
+            ) is True
+            and grounding_data.get(
+                "confidence",
+                0
+            ) >= 0.8
+        ):
+
+            verified_evidence.append(
+                item
+            )
+
+    evidence_data = verified_evidence
+
+    state["verified_evidence"] = {
+        "status": "success",
+        "data": evidence_data,
+        "error": None,
+        "attempts": 1,
+        "duration": None,
+        "fallback_used": False
+    }
+
+    if evidence_data:
+
+        insights = run_with_retry(
+
+            request_id=request_id,
+
             stage_name="Insight Generation",
-            operation=lambda: insight_chain.invoke({
-                "research": research_data,
-                "evidence": json.dumps(
-                    evidence_data,
-                    ensure_ascii=False
-                )
-            }),
+
+            operation=lambda: (
+                insight_chain.invoke({
+                    "research": research_data,
+
+                    "evidence": json.dumps(
+                        evidence_data,
+                        ensure_ascii=False
+                    )
+                })
+            ),
+
             validator=validate_insight_output,
+
             fallback=(
                 "Insights unavailable because "
                 "insight generation failed."
             )
         )
+
     else:
         insights = {
             "status": "skipped",
@@ -706,29 +965,48 @@ def run_research_pipeline(topic):
     insights_data = insights["data"]
 
     report = run_with_retry(
+
         request_id=request_id,
+
         stage_name="Writer",
-        operation=lambda: writer_chain.invoke({
-            "topic": topic,
-            "research": (
-                search_data
-                + "\n\n"
-                + research_data
-            ),
-            "reasoning": reasoning_data,
-            "evidence": json.dumps(
-                evidence_data,
-                ensure_ascii=False
-            ),
-            "insights": insights_data
-        }),
+
+        operation=lambda: (
+            writer_chain.invoke({
+
+                "topic": topic,
+
+                "research": (
+                    search_data
+                    + "\n\n"
+                    + research_data
+                ),
+
+                "reasoning": reasoning_data,
+
+                "evidence": json.dumps(
+                    evidence_data,
+                    ensure_ascii=False
+                ),
+
+                "insights": insights_data
+            })
+        ),
+
         validator=validate_report_output,
+
+        # No safe fallback for Writer.
+        # A report without successful generation
+        # should not be fabricated.
         fallback=None
     )
 
     state["report"] = report
 
+    # Writer is a critical dependency.
+    # Stop if it fails.
+
     if report["status"] == "failed":
+
         state["final_report"] = report
 
         log_event(
@@ -746,22 +1024,34 @@ def run_research_pipeline(topic):
     report_data = report["data"]
 
     feedback = run_with_retry(
+
         request_id=request_id,
+
         stage_name="Critic",
-        operation=lambda: critic_chain.invoke({
-            "report": report_data,
-            "evidence": json.dumps(
-                evidence_data,
-                ensure_ascii=False
-            )
-        }),
+
+        operation=lambda: (
+            critic_chain.invoke({
+
+                "report": report_data,
+
+                "evidence": json.dumps(
+                    evidence_data,
+                    ensure_ascii=False
+                )
+            })
+        ),
+
         validator=validate_critic_output,
+
+        # No separate critic fallback.
         fallback=None
     )
 
     state["feedback"] = feedback
 
+
     if feedback["status"] == "failed":
+
         state["final_report"] = {
             "status": "degraded",
             "data": report_data,
@@ -787,13 +1077,25 @@ def run_research_pipeline(topic):
     feedback_data = feedback["data"]
 
     final_report = run_with_retry(
+
         request_id=request_id,
+
         stage_name="Improver",
-        operation=lambda: improver_chain.invoke({
-            "report": report_data,
-            "feedback": feedback_data
-        }),
+
+        operation=lambda: (
+            improver_chain.invoke({
+
+                "report": report_data,
+
+                "feedback": feedback_data
+            })
+        ),
+
         validator=validate_improved_report,
+
+        # SAFE FALLBACK:
+        # If improvement fails,
+        # return the already valid original report.
         fallback=report_data
     )
 
@@ -815,13 +1117,19 @@ def run_research_pipeline(topic):
 
 
 if __name__ == "__main__":
+
     topic = input(
         "Enter topic: "
     ).strip()
 
     if not topic:
+
         print(
             "Please enter a research topic."
         )
+
     else:
-        run_research_pipeline(topic)
+
+        run_research_pipeline(
+            topic
+        )

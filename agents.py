@@ -1,10 +1,15 @@
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser, JsonOutputParser
+from langchain_core.runnables import RunnableLambda
 from langchain_groq import ChatGroq
 from dotenv import load_dotenv
+from pydantic import BaseModel, Field, ValidationError
+from typing import Literal
 import os
+import json
 
 load_dotenv()
+
 
 llm = ChatGroq(
     model="openai/gpt-oss-20b",
@@ -12,10 +17,35 @@ llm = ChatGroq(
     api_key=os.getenv("GROQ_API_KEY")
 )
 
-reasoning_prompt = ChatPromptTemplate.from_messages([
-    (
-        "system",
-        """You are a research strategist.
+
+class EvidenceItem(BaseModel):
+
+    claim: str = Field(
+        description="Claim directly supported by the research"
+    )
+
+    supporting_text: str = Field(
+        description="Supporting information directly present in the research"
+    )
+
+    source_url: str = Field(
+        description="Source URL associated with the evidence"
+    )
+
+    evidence_type: Literal[
+        "statistic",
+        "factual_claim",
+        "projection"
+    ] = Field(
+        description="Type of evidence"
+    )
+
+reasoning_prompt = ChatPromptTemplate.from_messages(
+    [
+        (
+            "system",
+            """
+You are a research strategist.
 
 Think BEFORE writing.
 
@@ -28,11 +58,12 @@ Identify:
 
 Be precise. No fluff.
 """
-    ),
+        ),
 
-    (
-        "human",
-        """Research Data:
+        (
+            "human",
+            """
+Research Data:
 
 {research}
 
@@ -53,63 +84,70 @@ Strong Sources:
 Weak Areas:
 - ...
 """
-    )
-])
+        )
+    ]
+)
 
-reasoning_chain = reasoning_prompt | llm | StrOutputParser()
+
+reasoning_chain = (
+    reasoning_prompt
+    | llm
+    | StrOutputParser()
+)
 
 
-evidence_prompt = ChatPromptTemplate.from_messages([
-    (
-        "system",
-        """You are an evidence extraction system.
+# ============================================================
+# EVIDENCE EXTRACTION PROMPT
+# ============================================================
 
-Extract ONLY evidence that is directly supported by the provided research.
+evidence_prompt = ChatPromptTemplate.from_messages(
+    [
+        (
+            "system",
+            """
+You are an evidence extraction system.
 
-For every evidence item identify:
+Extract ONLY evidence directly supported by the provided research.
 
-- claim
-- supporting_text
-- source_url
-- evidence_type
+Each evidence item MUST contain exactly these four fields:
+
+claim
+supporting_text
+source_url
+evidence_type
 
 Allowed evidence_type values:
 
-- statistic
-- factual_claim
-- projection
+statistic
+factual_claim
+projection
 
 STRICT RULES:
 
 1. Do NOT invent facts.
-2. Do NOT add information that is not present in the research.
+2. Do NOT use outside knowledge.
 3. Do NOT combine unrelated information from different sources.
-4. Preserve the source URL associated with the evidence.
-5. Ignore opinions, assumptions, interpretations, and unsupported statements.
-6. Only extract evidence that can be directly traced to the provided research.
-7. If there is no strong evidence, return an empty JSON array.
-8. Return ONLY valid JSON.
-9. Do NOT return Markdown.
-10. Do NOT use code fences.
-11. Do NOT add explanations before or after the JSON.
-"""
-    ),
+4. source_url MUST come directly from the provided research.
+5. supporting_text MUST be directly supported by the provided research.
+6. Every evidence item MUST contain all four fields.
+7. evidence_type MUST be exactly one of:
+   statistic
+   factual_claim
+   projection
+8. Ignore opinions and unsupported statements.
+9. If no strong evidence exists, return an empty list.
+10. Return ONLY valid JSON.
+11. Do NOT return Markdown.
+12. Do NOT use code fences.
+13. Do NOT add explanations before or after the JSON.
 
-    (
-        "human",
-        """Research:
-
-{research}
-
-Return ONLY a JSON array.
-
-Use exactly this structure:
+Return exactly:
 
 [
   {{
-    "claim": "claim directly supported by the research",
-    "supporting_text": "supporting information from the research",
-    "source_url": "source URL associated with the evidence",
+    "claim": "...",
+    "supporting_text": "...",
+    "source_url": "...",
     "evidence_type": "statistic"
   }}
 ]
@@ -117,18 +155,216 @@ Use exactly this structure:
 If there is no strong evidence, return:
 
 []
+"""
+        ),
 
-Return ONLY the JSON array."""
-    )
-])
+        (
+            "human",
+            """
+Research:
 
-evidence_chain = evidence_prompt | llm | JsonOutputParser()
+{research}
+
+Extract only strong, directly supported evidence.
+
+Return ONLY the JSON array.
+"""
+        )
+    ]
+)
+
+evidence_raw_chain = (
+    evidence_prompt
+    | llm
+    | StrOutputParser()
+)
 
 
-insight_prompt = ChatPromptTemplate.from_messages([
-    (
-        "system",
-        """You generate insights.
+def parse_and_validate_evidence(raw_output):
+
+    if raw_output is None:
+        raise ValueError(
+            "Evidence extraction returned None"
+        )
+
+    if not isinstance(raw_output, str):
+        raw_output = str(raw_output)
+
+    text = raw_output.strip()
+
+    if not text:
+        raise ValueError(
+            "Evidence extraction returned empty output"
+        )
+
+    if text.startswith("```"):
+
+        if text.startswith("```json"):
+            text = text[7:]
+
+        elif text.startswith("```"):
+            text = text[3:]
+
+        if text.endswith("```"):
+            text = text[:-3]
+
+        text = text.strip()
+
+    try:
+
+        parsed = json.loads(text)
+
+    except json.JSONDecodeError as error:
+
+        raise ValueError(
+            f"Invalid JSON returned by evidence extraction: {error}"
+        )
+
+
+    if isinstance(parsed, dict):
+
+        if "evidence" not in parsed:
+            raise ValueError(
+                "Evidence JSON object missing 'evidence' field"
+            )
+
+        parsed = parsed["evidence"]
+
+
+    if not isinstance(parsed, list):
+
+        raise ValueError(
+            "Evidence output must be a JSON list"
+        )
+
+    validated = []
+
+    for index, item in enumerate(parsed):
+
+        if not isinstance(item, dict):
+
+            raise ValueError(
+                f"Evidence item {index + 1} must be an object"
+            )
+
+        try:
+
+            evidence_item = EvidenceItem.model_validate(
+                item
+            )
+
+        except ValidationError as error:
+
+            raise ValueError(
+                f"Invalid evidence item {index + 1}: {error}"
+            )
+
+        if not evidence_item.claim.strip():
+
+            raise ValueError(
+                f"Evidence item {index + 1} has empty claim"
+            )
+
+        if not evidence_item.supporting_text.strip():
+
+            raise ValueError(
+                f"Evidence item {index + 1} has empty supporting_text"
+            )
+
+        if not evidence_item.source_url.strip():
+
+            raise ValueError(
+                f"Evidence item {index + 1} has empty source_url"
+            )
+
+        validated.append(
+            evidence_item.model_dump()
+        )
+
+    return validated
+
+
+evidence_chain = (
+    evidence_raw_chain
+    | RunnableLambda(parse_and_validate_evidence)
+)
+
+
+grounding_prompt = ChatPromptTemplate.from_messages(
+    [
+        (
+            "system",
+            """
+You are an evidence verification system.
+
+Your job is to determine whether an extracted claim is directly supported by the provided source content.
+
+STRICT RULES:
+
+- Verify the claim ONLY against the provided source content.
+- Do NOT use outside knowledge.
+- Do NOT assume missing information.
+- The claim must be supported by the source.
+- The supporting_text must actually support the claim.
+- If the source does not support the claim, mark it as false.
+- Do not treat similar wording as sufficient evidence.
+- Preserve the original evidence information.
+- Return ONLY valid JSON.
+
+Return exactly:
+
+{{
+  "verified": true,
+  "reason": "...",
+  "confidence": 0.0
+}}
+
+confidence must be between 0 and 1.
+"""
+        ),
+
+        (
+            "human",
+            """
+SOURCE CONTENT:
+
+{source_content}
+
+EXTRACTED EVIDENCE:
+
+Claim:
+
+{claim}
+
+Supporting Text:
+
+{supporting_text}
+
+Source URL:
+
+{source_url}
+
+Determine whether the extracted claim is directly supported by the source content.
+"""
+        )
+    ]
+)
+
+
+grounding_chain = (
+    grounding_prompt
+    | llm
+    | JsonOutputParser()
+)
+
+
+
+insight_prompt = ChatPromptTemplate.from_messages(
+    [
+        (
+            "system",
+            """
+You generate insights.
 
 Focus on:
 - WHY trends exist
@@ -137,11 +373,12 @@ Focus on:
 
 DO NOT repeat facts.
 """
-    ),
+        ),
 
-    (
-        "human",
-        """Research Data:
+        (
+            "human",
+            """
+Research Data:
 
 {research}
 
@@ -155,31 +392,41 @@ Generate insights:
 - Insight 2
 - Insight 3
 """
-    )
-])
+        )
+    ]
+)
 
-insight_chain = insight_prompt | llm | StrOutputParser()
+
+insight_chain = (
+    insight_prompt
+    | llm
+    | StrOutputParser()
+)
 
 
-writer_prompt = ChatPromptTemplate.from_messages([
-    (
-        "system",
-        """You are a senior research analyst.
+writer_prompt = ChatPromptTemplate.from_messages(
+    [
+        (
+            "system",
+            """
+You are a senior research analyst.
 
 STRICT RULES:
-- Use reasoning, evidence, and insights
-- No fluff
-- No repetition
-- Be analytical, not descriptive
-- Do not invent sources, studies, statistics, searches, or research methods
-- Only claim that something was researched if it exists in the provided research data
-- If data is weak → say "insufficient evidence"
-"""
-    ),
 
-    (
-        "human",
-        """Write a professional report.
+- Use reasoning, evidence, and insights.
+- No fluff.
+- No repetition.
+- Be analytical, not descriptive.
+- Do not invent sources, studies, statistics, searches, or research methods.
+- Only claim that something was researched if it exists in the provided research data.
+- If data is weak, say "insufficient evidence".
+"""
+        ),
+
+        (
+            "human",
+            """
+Write a professional report.
 
 Topic:
 
@@ -224,31 +471,40 @@ STRUCTURE:
 
 -------------------------------------
 """
-    )
-])
+        )
+    ]
+)
 
-writer_chain = writer_prompt | llm | StrOutputParser()
 
+writer_chain = (
+    writer_prompt
+    | llm
+    | StrOutputParser()
+)
 
-improver_prompt = ChatPromptTemplate.from_messages([
-    (
-        "system",
-        """You improve reports.
+improver_prompt = ChatPromptTemplate.from_messages(
+    [
+        (
+            "system",
+            """
+You improve reports.
 
 Rules:
-- Fix ONLY weak parts
-- Do NOT rewrite everything
-- Improve reasoning, clarity, and structure
-- Do NOT introduce new facts
-- Do NOT introduce new sources
-- Do NOT claim that additional research was performed
-- Keep all factual claims grounded in the provided report and feedback
-"""
-    ),
 
-    (
-        "human",
-        """Report:
+- Fix ONLY weak parts.
+- Do NOT rewrite everything.
+- Improve reasoning, clarity, and structure.
+- Do NOT introduce new facts.
+- Do NOT introduce new sources.
+- Do NOT claim that additional research was performed.
+- Keep all factual claims grounded in the provided report and feedback.
+"""
+        ),
+
+        (
+            "human",
+            """
+Report:
 
 {report}
 
@@ -258,63 +514,29 @@ Feedback:
 
 Return improved report.
 """
-    )
-])
+        )
+    ]
+)
 
-improver_chain = improver_prompt | llm | StrOutputParser()
+
+improver_chain = (
+    improver_prompt
+    | llm
+    | StrOutputParser()
+)
 
 
-# critic_prompt = ChatPromptTemplate.from_messages([
-#     (
-#         "system",
-#         """You are a strict evaluator.
-
-# Focus on:
-# - depth
-# - reasoning
-# - evidence usage
-# - structure
-# - unsupported claims
-
-# Be critical.
-# """
-#     ),
-
-#     (
-#         "human",
-#         """Evaluate:
-
-# {report}
-
-# Return:
-
-# Score: X/10
-
-# Strengths:
-# - ...
-
-# Weaknesses:
-# - ...
-
-# Improvements:
-# - ...
-
-# Verdict:
-# ...
-# """
-#     )
-# ])
-
-# critic_chain = critic_prompt | llm | StrOutputParser()
-
-critic_prompt = ChatPromptTemplate.from_messages([
-    (
-        "system",
-        """You are a strict research evaluator.
+critic_prompt = ChatPromptTemplate.from_messages(
+    [
+        (
+            "system",
+            """
+You are a strict research evaluator.
 
 Evaluate the report against the provided evidence.
 
 Focus on:
+
 - depth
 - reasoning
 - evidence usage
@@ -323,17 +545,19 @@ Focus on:
 - structure
 
 STRICT RULES:
+
 - Do NOT assume unsupported claims are true.
 - Identify claims that are not supported by the provided evidence.
 - Identify hallucinated statistics or sources.
 - Identify evidence that is used incorrectly.
 - Be critical.
 """
-    ),
+        ),
 
-    (
-        "human",
-        """Evaluate the following research report.
+        (
+            "human",
+            """
+Evaluate the following research report.
 
 Report:
 
@@ -365,7 +589,13 @@ Improvements:
 Verdict:
 ...
 """
-    )
-])
+        )
+    ]
+)
 
-critic_chain = critic_prompt | llm | StrOutputParser()
+
+critic_chain = (
+    critic_prompt
+    | llm
+    | StrOutputParser()
+)

@@ -6,10 +6,14 @@ import os
 from dotenv import load_dotenv
 import time
 from urllib.parse import urlparse
+from pypdf import PdfReader
+from io import BytesIO
 
 load_dotenv()
 
-tavily = TavilyClient(api_key=os.getenv("TAVILY_API_KEY"))
+tavily = TavilyClient(
+    api_key=os.getenv("TAVILY_API_KEY")
+)
 
 DOMAIN_SCORES = {
     ".gov": 5,
@@ -24,9 +28,17 @@ DOMAIN_SCORES = {
 }
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/145.0.0.0 Safari/537.36"
+    ),
     "Accept-Language": "en-US,en;q=0.9",
-    "Connection": "keep-alive"
+    "Accept": (
+        "text/html,application/xhtml+xml,"
+        "application/xml;q=0.9,application/pdf;q=0.8,*/*;q=0.7"
+    ),
+    "Connection": "keep-alive",
 }
 
 session = requests.Session()
@@ -35,29 +47,32 @@ session.headers.update(HEADERS)
 
 def get_domain_score(url: str) -> int:
     score = 0
+
     for domain, value in DOMAIN_SCORES.items():
         if domain in url.lower():
             score = max(score, value)
+
     return score
 
 
 @tool
 def web_search(query: str) -> str:
     """
-    Smart web search:
-    - filters low-quality sources
-    - ranks by domain credibility
+    Search the web for high-quality research sources.
     """
-
     try:
-        results = tavily.search(query=query, max_results=10)
+        results = tavily.search(
+            query=query,
+            max_results=10
+        )
     except Exception as e:
-        return f" Search failed: {str(e)}"
+        return f"Search failed: {str(e)}"
 
     processed = []
 
-    for r in results.get("results", []):
-        url = r.get("url", "").strip()
+    for result in results.get("results", []):
+        url = result.get("url", "").strip()
+
         if not url:
             continue
 
@@ -66,11 +81,23 @@ def web_search(query: str) -> str:
         if score == 0:
             continue
 
-        title = r.get("title", "No Title")
-        content = r.get("content", "")
+        title = result.get(
+            "title",
+            "No Title"
+        )
 
-        summary = content.replace("\n", " ").strip()
-        summary = summary[:300].rsplit(" ", 1)[0]
+        content = result.get(
+            "content",
+            ""
+        )
+
+        summary = (
+            content
+            .replace("\n", " ")
+            .strip()
+        )
+
+        summary = summary[:300]
 
         processed.append({
             "title": title,
@@ -82,86 +109,222 @@ def web_search(query: str) -> str:
     if not processed:
         return "No high-quality results found."
 
-    
-    processed = sorted(processed, key=lambda x: x["score"], reverse=True)[:5]
+    processed = sorted(
+        processed,
+        key=lambda item: item["score"],
+        reverse=True
+    )[:5]
 
+    output = []
 
-    out = []
     for item in processed:
-        out.append(
+        output.append(
             f"SCORE: {item['score']}\n"
             f"TITLE: {item['title']}\n"
             f"URL: {item['url']}\n"
             f"SUMMARY: {item['summary']}\n"
         )
 
-    return "\n----\n".join(out)
+    return "\n----\n".join(output)
+
+
+def clean_text(text: str) -> str:
+    return " ".join(
+        text.replace("\xa0", " ").split()
+    )
+
+
+def extract_html_content(html: str) -> str:
+    soup = BeautifulSoup(
+        html,
+        "html.parser"
+    )
+
+    for tag in soup([
+        "script",
+        "style",
+        "nav",
+        "footer",
+        "header",
+        "aside",
+        "form",
+        "noscript",
+        "iframe",
+        "svg"
+    ]):
+        tag.decompose()
+
+    content_container = (
+        soup.find("article")
+        or soup.find("main")
+        or soup.find(
+            "div",
+            class_=lambda value: (
+                value and any(
+                    keyword in str(value).lower()
+                    for keyword in [
+                        "article",
+                        "content",
+                        "post",
+                        "entry",
+                        "story"
+                    ]
+                )
+            )
+        )
+    )
+
+    if content_container:
+        text = content_container.get_text(
+            separator=" ",
+            strip=True
+        )
+    else:
+        paragraphs = soup.find_all("p")
+
+        text = " ".join(
+            paragraph.get_text(
+                separator=" ",
+                strip=True
+            )
+            for paragraph in paragraphs
+        )
+
+    return clean_text(text)
+
+
+def extract_pdf_content(content: bytes) -> str:
+    reader = PdfReader(
+        BytesIO(content)
+    )
+
+    pages = []
+
+    for page in reader.pages:
+        try:
+            page_text = page.extract_text()
+
+            if page_text:
+                pages.append(page_text)
+
+        except Exception:
+            continue
+
+    return clean_text(
+        " ".join(pages)
+    )
+
+
+def extract_content(response) -> str:
+    content_type = response.headers.get(
+        "Content-Type",
+        ""
+    ).lower()
+
+    url_path = urlparse(
+        response.url
+    ).path.lower()
+
+    is_pdf = (
+        "application/pdf" in content_type
+        or url_path.endswith(".pdf")
+    )
+
+    if is_pdf:
+        return extract_pdf_content(
+            response.content
+        )
+
+    return extract_html_content(
+        response.text
+    )
+
+
+def validate_content(text: str) -> bool:
+    if not text:
+        return False
+
+    if len(text) < 400:
+        return False
+
+    words = text.split()
+
+    if len(words) < 60:
+        return False
+
+    return True
 
 
 @tool
 def scrape_urls(urls: str) -> str:
     """
-    Advanced scraper:
-    - retry logic
-    - content validation
-    - removes noise
-    - prioritizes readable content
+    Scrape and extract usable text from the provided URLs.
+    Supports HTML pages and PDF documents.
     """
-
     results = []
 
-    for url in urls.split(","):
-        url = url.strip()
-        if not url:
-            continue
+    url_list = [
+        url.strip()
+        for url in urls.split(",")
+        if url.strip()
+    ]
 
+    for url in url_list:
         success = False
+        last_error = None
 
-        for attempt in range(2):
+        for attempt in range(1, 3):
             try:
-                resp = session.get(url, timeout=8)
+                response = session.get(
+                    url,
+                    timeout=12,
+                    allow_redirects=True
+                )
 
-                if resp.status_code != 200:
-                    time.sleep(1)
-                    continue
+                if response.status_code != 200:
+                    raise requests.HTTPError(
+                        f"HTTP {response.status_code}"
+                    )
 
-                soup = BeautifulSoup(resp.text, "html.parser")
+                content = extract_content(
+                    response
+                )
 
-                # remove junk
-                for tag in soup([
-                    "script", "style", "nav", "footer",
-                    "header", "aside", "form"
-                ]):
-                    tag.decompose()
+                if not validate_content(
+                    content
+                ):
+                    raise ValueError(
+                        "Extracted content is insufficient"
+                    )
 
-                
-                paragraphs = soup.find_all("p")
-                text = " ".join(p.get_text() for p in paragraphs)
-
-                text = " ".join(text.split())
-
-               
-                if len(text) < 400:
-                    continue
-
-                text = text[:2500]
+                content = content[:6000]
 
                 results.append(
-                    f"\nSOURCE: {url}\n{text}\n"
+                    f"SOURCE: {response.url}\n"
+                    f"{content}\n"
                 )
 
                 success = True
                 break
 
-            except Exception:
-                time.sleep(1)
+            except Exception as error:
+                last_error = error
+
+                if attempt < 2:
+                    time.sleep(
+                        1.0 * attempt
+                    )
 
         if not success:
-            results.append(
-                f"\nSOURCE: {url}\n Failed / Low-quality content\n"
+            print(
+                f"Scraping failed for {url}: "
+                f"{last_error}"
             )
 
     if not results:
-        return "No content could be scraped."
+        raise ValueError(
+            "No usable content could be scraped "
+            "from any source"
+        )
 
     return "\n=====\n".join(results)
