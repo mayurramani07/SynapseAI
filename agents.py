@@ -1,32 +1,113 @@
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.output_parsers import StrOutputParser, JsonOutputParser
+from langchain_core.output_parsers import StrOutputParser
 from langchain_groq import ChatGroq
 from dotenv import load_dotenv
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field
 from typing import Literal
-from langchain_core.runnables import RunnableLambda
 import os
-import json
 
 load_dotenv()
 
-llm = ChatGroq(
-    model="openai/gpt-oss-20b",
-    temperature=0.2,
-    api_key=os.getenv("GROQ_API_KEY")
-)
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+
+def get_provider_llms():
+    """Build prioritized list of available LLM providers and models for automatic fallback."""
+    providers = []
+
+    if GROQ_API_KEY:
+        groq_models = [
+            ("Groq (gpt-oss-20b)", "openai/gpt-oss-20b"),
+            ("Groq (gpt-oss-120b)", "openai/gpt-oss-120b"),
+            ("Groq (compound-mini)", "groq/compound-mini"),
+            ("Groq (qwen-27b)", "qwen/qwen3.6-27b")
+        ]
+        for name, model_id in groq_models:
+            try:
+                providers.append({
+                    "name": name,
+                    "llm": ChatGroq(
+                        model=model_id,
+                        temperature=0.2,
+                        api_key=GROQ_API_KEY,
+                        max_retries=0
+                    )
+                })
+            except Exception:
+                pass
+
+    google_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+    if google_key:
+        try:
+            from langchain_google_genai import ChatGoogleGenerativeAI
+            providers.append({
+                "name": "Gemini (gemini-1.5-flash)",
+                "llm": ChatGoogleGenerativeAI(
+                    model="gemini-1.5-flash",
+                    temperature=0.2,
+                    google_api_key=google_key
+                )
+            })
+        except Exception:
+            pass
+    openrouter_key = os.getenv("OPENROUTER_API_KEY")
+    if openrouter_key:
+        try:
+            from langchain_openai import ChatOpenAI
+            providers.append({
+                "name": "OpenRouter (llama-3.1-8b)",
+                "llm": ChatOpenAI(
+                    model="meta-llama/llama-3.1-8b-instruct:free",
+                    openai_api_key=openrouter_key,
+                    openai_api_base="https://openrouter.ai/api/v1",
+                    temperature=0.2
+                )
+            })
+        except Exception:
+            pass
+
+    return providers
+
+
+provider_pool = get_provider_llms()
+llm = provider_pool[0]["llm"] if provider_pool else None
+
+
+def execute_prompt_with_fallback(prompt, input_dict):
+    """Executes a prompt against LLM providers in order. Fails over immediately on rate-limit/TPD/404 errors."""
+    last_error = None
+    providers = get_provider_llms()
+
+    for provider in providers:
+        try:
+            chain = prompt | provider["llm"] | StrOutputParser()
+            result = chain.invoke(input_dict)
+            return result
+        except Exception as error:
+            last_error = error
+            error_text = str(error).lower()
+            # If rate limit, quota, TPD, 404, or connection error, failover to next provider/model in pool
+            if any(p in error_text for p in ["rate limit", "tpm", "tpd", "429", "404", "model_not_found", "quota", "503", "500"]):
+                continue
+            raise error
+
+    if last_error:
+        raise last_error
+    raise RuntimeError("No LLM provider available.")
 
 
 class EvidenceItem(BaseModel):
     claim: str = Field(
         description="Claim directly supported by the research"
     )
+
     supporting_text: str = Field(
         description="Supporting information directly present in the research"
     )
+
     source_url: str = Field(
         description="Source URL associated with the evidence"
     )
+
     evidence_type: Literal[
         "statistic",
         "factual_claim",
@@ -35,13 +116,12 @@ class EvidenceItem(BaseModel):
         description="Type of evidence"
     )
 
-
 reasoning_prompt = ChatPromptTemplate.from_messages([
     (
         "system",
         """You are a research strategist.
 
-Think BEFORE writing.
+Think before writing.
 
 Identify:
 - themes
@@ -50,7 +130,8 @@ Identify:
 - strongest sources
 - missing data
 
-Be precise. No fluff.
+Be precise.
+No fluff.
 """
     ),
     (
@@ -93,10 +174,9 @@ evidence_prompt = ChatPromptTemplate.from_messages([
 
 Extract ONLY the strongest evidence directly supported by the provided research.
 
-IMPORTANT:
 Return NO MORE THAN 3 evidence items.
 
-Each item MUST contain exactly:
+Each item MUST contain exactly these four fields:
 
 claim
 supporting_text
@@ -119,21 +199,18 @@ STRICT RULES:
 6. Do NOT rewrite supporting_text.
 7. Do NOT create URLs.
 8. Every item MUST contain all four fields.
-9. evidence_type MUST be one of:
-   statistic
-   factual_claim
-   projection
+9. evidence_type MUST be one of the allowed values.
 10. Prefer strong statistics and directly stated factual claims.
 11. Return at most 3 items.
-12. If no strong evidence exists, return an empty list.
-13. Return ONLY JSON.
+12. If no strong evidence exists, return [].
+13. Return ONLY valid JSON.
 14. Do NOT use Markdown.
 15. Do NOT use code fences.
 16. Do NOT add explanations.
-17. Keep each claim short.
-18. Keep each supporting_text short.
+17. Keep claims short.
+18. Keep supporting_text short.
 
-The response MUST have this exact structure:
+Required JSON structure:
 
 [
   {{
@@ -144,7 +221,7 @@ The response MUST have this exact structure:
   }}
 ]
 
-OR:
+If there is no strong evidence:
 
 []
 
@@ -165,198 +242,39 @@ Return ONLY the JSON array."""
     )
 ])
 
-
-evidence_raw_chain = (
+evidence_chain = (
     evidence_prompt
     | llm
     | StrOutputParser()
 )
 
 
-def parse_and_validate_evidence(raw_output):
-
-    if raw_output is None:
-        raise ValueError(
-            "Evidence extraction returned None"
-        )
-
-    text = str(raw_output).strip()
-
-    if not text:
-        raise ValueError(
-            "Evidence extraction returned empty output"
-        )
-
-    if "```json" in text:
-        text = text.replace(
-            "```json",
-            "",
-            1
-        )
-
-    if "```" in text:
-        text = text.replace(
-            "```",
-            ""
-        )
-
-    text = text.strip()
-
-    start = text.find("[")
-
-    if start == -1:
-        raise ValueError(
-            "Evidence extraction did not return a JSON array"
-        )
-
-    end = text.rfind("]")
-
-    if end == -1:
-        raise ValueError(
-            "Evidence extraction returned incomplete JSON"
-        )
-
-    text = text[start:end + 1]
-
-    try:
-        parsed = json.loads(text)
-
-    except json.JSONDecodeError as error:
-        raise ValueError(
-            f"Invalid JSON returned by evidence extraction: {error}"
-        )
-
-    if isinstance(parsed, dict):
-
-        parsed = parsed.get(
-            "evidence",
-            []
-        )
-
-    if not isinstance(parsed, list):
-        raise ValueError(
-            "Evidence output must be a list"
-        )
-
-    validated = []
-
-    for index, item in enumerate(parsed[:3]):
-
-        if not isinstance(item, dict):
-            continue
-
-        try:
-            evidence_item = EvidenceItem.model_validate(
-                item
-            )
-
-        except ValidationError as error:
-            raise ValueError(
-                f"Invalid evidence item {index + 1}: {error}"
-            )
-
-        if not evidence_item.claim.strip():
-            continue
-
-        if not evidence_item.supporting_text.strip():
-            continue
-
-        if not evidence_item.source_url.strip():
-            continue
-
-        validated.append(
-            evidence_item.model_dump()
-        )
-
-    return validated
-
-
-evidence_chain = (
-    evidence_raw_chain
-    | RunnableLambda(parse_and_validate_evidence)
-)
-
-
-# grounding_prompt = ChatPromptTemplate.from_messages([
-#     (
-#         "system",
-#         """You are an evidence verification system.
-
-# Verify each evidence item ONLY against the provided source content.
-
-# Do NOT use outside knowledge.
-
-# For every evidence item return:
-
-# {{
-#   "evidence_index": 1,
-#   "verified": true,
-#   "reason": "short reason",
-#   "confidence": 0.95
-# }}
-
-# STRICT RULES:
-
-# - evidence_index must match the supplied evidence item number.
-# - verified must be true only when the source directly supports the claim.
-# - confidence must be between 0 and 1.
-# - Do not invent information.
-# - Return ONLY a JSON array.
-# - Return one result for every supplied evidence item.
-# """
-#     ),
-#     (
-#         "human",
-#         """SOURCE CONTENT:
-
-# {source_content}
-
-# EVIDENCE ITEMS:
-
-# {evidence_items}
-
-# Verify every evidence item.
-
-# Return ONLY the JSON array."""
-#     )
-# ])
-
-
-# grounding_chain = (
-#     grounding_prompt
-#     | llm
-#     | JsonOutputParser()
-# )
 grounding_prompt = ChatPromptTemplate.from_messages([
     (
         "system",
         """You are an evidence verification system.
 
-Verify the supplied evidence item ONLY against the provided source content.
+Verify each evidence item ONLY against the provided source content.
 
 Do NOT use outside knowledge.
 
-STRICT RULES:
+For every supplied evidence item return one object.
 
-- verified must be true only when the source directly supports the claim.
-- verified must be false when the source does not directly support the claim.
+Required fields:
+
+evidence_index
+verified
+reason
+confidence
+
+Rules:
+
+- evidence_index must match the supplied item number.
+- verified must be true ONLY when the source directly supports the claim.
 - confidence must be between 0 and 1.
-- reason must briefly explain the verification result.
 - Do not invent information.
-- Do not modify the evidence.
-- Return ONLY one JSON object.
-- Do NOT return a JSON array.
-- Do NOT use Markdown.
-- Do NOT use code fences.
-- Do NOT add explanations.
-
-Return exactly:
-
-{{
-  "verified": true,
-  "reason": "The source directly supports the claim.",
-  "confidence": 0.95
-}}
+- Return ONLY valid JSON.
+- Return a JSON array.
 """
     ),
     (
@@ -365,20 +283,20 @@ Return exactly:
 
 {source_content}
 
-EVIDENCE ITEM:
+EVIDENCE ITEMS:
 
 {evidence_items}
 
-Verify whether this evidence item is directly supported by the source content.
+Verify every evidence item.
 
-Return ONLY the JSON object."""
+Return ONLY the JSON array."""
     )
 ])
 
 grounding_chain = (
     grounding_prompt
     | llm
-    | JsonOutputParser()
+    | StrOutputParser()
 )
 
 
@@ -431,49 +349,42 @@ insight_chain = (
     | StrOutputParser()
 )
 
-
 writer_prompt = ChatPromptTemplate.from_messages([
     (
         "system",
-        """You are a senior research analyst.
+        """You are a strictly grounded, evidence-bound senior research analyst.
 
-STRICT RULES:
+STRICT GROUNDING & EVIDENCE-BOUND RULES:
 
-- Use reasoning, evidence, and insights.
-- No fluff.
-- No repetition.
-- Be analytical.
-- Do not invent sources.
-- Do not invent statistics.
-- Do not invent studies.
-- Do not invent research methods.
-- Only use verified evidence for factual claims.
-- If evidence is weak, say "insufficient evidence".
+1. ABSOLUTE SOURCE OF TRUTH: The "Verified Evidence" section is your ONLY source of truth for factual claims, metrics, numbers, statistics, percentages, and citations.
+2. CONTEXT VS FACTS: "Research Data", "Reasoning", and "Insights" provide background structure and analytical perspective ONLY. Do NOT extract any unverified facts, figures, or sources from them that do not appear in "Verified Evidence".
+3. INSUFFICIENT EVIDENCE RULE: If there is no verified evidence supporting a specific metric, statement, or finding, you MUST explicitly state "Insufficient verified evidence available" for that point. Do NOT fill factual gaps with assumptions, unverified text, or prior knowledge.
+4. ZERO HALLUCINATION:
+   - Do NOT invent sources, URLs, domain names, or publishing dates.
+   - Do NOT invent statistics, sample sizes, percentages, or metrics.
+   - Do NOT invent studies, methodologies, or research entities.
+5. CITATIONS: Every factual assertion or metric MUST explicitly cite its matching `source_url` from Verified Evidence.
+6. SOURCES SECTION: In section "7. Sources", list ONLY the exact `source_url`s explicitly present in Verified Evidence. If no verified evidence is available, list "No verified sources available."
 """
     ),
     (
         "human",
-        """Write a professional research report.
+        """Write a strictly grounded research report.
 
 Topic:
-
 {topic}
 
-Research Data:
-
-{research}
-
-Reasoning:
-
-{reasoning}
-
-Verified Evidence:
-
+Verified Evidence (STRICT SOURCE OF TRUTH FOR ALL FACTS):
 {evidence}
 
-Insights:
-
+Contextual Insights:
 {insights}
+
+Strategic Reasoning (Context Only):
+{reasoning}
+
+Raw Research Context (Context Only - Do NOT extract unverified facts from here):
+{research}
 
 -------------------------------------
 
@@ -483,15 +394,15 @@ STRUCTURE:
 
 2. Methodology
 
-3. Key Findings
+3. Key Findings (ONLY facts supported by Verified Evidence)
 
 4. Deep Analysis
 
-5. Limitations
+5. Limitations (Explicitly highlight missing or weak verified evidence)
 
 6. Conclusion
 
-7. Sources
+7. Sources (ONLY URLs from Verified Evidence)
 
 -------------------------------------
 """
@@ -578,18 +489,20 @@ critic_chain = (
 improver_prompt = ChatPromptTemplate.from_messages([
     (
         "system",
-        """You improve research reports.
+        """You are an expert report refiner strictly bound by verified research evidence.
 
-Rules:
+STRICT REFINEMENT RULES:
 
-- Fix ONLY weak parts.
-- Do NOT rewrite everything unnecessarily.
-- Improve reasoning, clarity, and structure.
-- Do NOT introduce new facts.
-- Do NOT introduce new sources.
-- Do NOT introduce new statistics.
-- Do NOT claim additional research was performed.
-- Keep factual claims grounded in the provided report and feedback.
+1. EVIDENCE GROUNDING: You MUST cross-check every claim in the report against the provided "Verified Evidence".
+2. REMOVE UNSUPPORTED CLAIMS: If the Critic Feedback highlights any unsupported claims, hallucinated metrics, ungrounded statistics, or invalid sources, you MUST either:
+   a. Remove the unsupported claim entirely, or
+   b. Replace it with an explicit statement: "Insufficient verified evidence available."
+3. DO NOT ADD UNGROUNDED FACTS:
+   - Do NOT introduce new facts, metrics, statistics, or numbers.
+   - Do NOT introduce new source URLs or references not found in Verified Evidence.
+   - Do NOT attempt to "fix" an unsupported claim by inventing plausible details.
+4. SOURCES INTEGRITY: Section "7. Sources" must strictly contain ONLY valid `source_url`s from Verified Evidence.
+5. PRESERVE QUALITY: Keep the refined report clear, analytical, and professional while ensuring 100% strict adherence to Verified Evidence.
 """
     ),
     (
@@ -598,11 +511,15 @@ Rules:
 
 {report}
 
-Feedback:
+Critic Feedback:
 
 {feedback}
 
-Return the improved report."""
+Verified Evidence (STRICT SOURCE OF TRUTH):
+
+{evidence}
+
+Return the refined, strictly grounded report."""
     )
 ])
 

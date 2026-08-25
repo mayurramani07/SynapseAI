@@ -18,13 +18,24 @@ tavily = TavilyClient(
 DOMAIN_SCORES = {
     ".gov": 5,
     ".edu": 5,
-    "reuters": 4,
-    "bloomberg": 4,
+    "arxiv": 5,
+    "nature.com": 5,
+    "ieee.org": 5,
+    "acm.org": 5,
     "worldbank": 5,
     "imf": 5,
+    "reuters": 4,
+    "bloomberg": 4,
+    "mckinsey": 4,
+    "gartner": 4,
+    "hbr.org": 4,
     "cnbc": 3,
     "forbes": 3,
+    "techcrunch": 3,
+    "wired": 3,
     "investopedia": 3,
+    "github.com": 2,
+    "medium.com": 2,
 }
 
 HEADERS = {
@@ -46,7 +57,7 @@ session.headers.update(HEADERS)
 
 
 def get_domain_score(url: str) -> int:
-    score = 0
+    score = 1  # Default baseline score so search results are never discarded
 
     for domain, value in DOMAIN_SCORES.items():
         if domain in url.lower():
