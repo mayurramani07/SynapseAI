@@ -270,8 +270,11 @@ def validate_content(text: str) -> bool:
 def scrape_urls(urls: str) -> str:
     """
     Scrape and extract usable text from the provided URLs.
-    Supports HTML pages and PDF documents.
+    Supports HTML pages and PDF documents. Includes a lightweight cloud fallback via Jina Reader API.
     """
+    import logging
+    logger = logging.getLogger("synapseai")
+
     results = []
 
     url_list = [
@@ -320,14 +323,40 @@ def scrape_urls(urls: str) -> str:
 
             except Exception as error:
                 last_error = error
+                
+                # Cloud bypass fallback: Try Jina Reader API (lightweight, cloud-based, free tier friendly)
+                try:
+                    logger.warning(
+                        f"Standard scraping failed for {url} ({error}). "
+                        "Attempting Jina Reader cloud fallback..."
+                    )
+                    jina_url = f"https://r.jina.ai/{url}"
+                    jina_resp = session.get(jina_url, timeout=15)
+                    
+                    if jina_resp.status_code == 200:
+                        jina_content = jina_resp.text
+                        if validate_content(jina_content):
+                            content = jina_content[:6000]
+                            results.append(
+                                f"SOURCE: {url}\n"
+                                f"{content}\n"
+                            )
+                            success = True
+                            break
+                        else:
+                            raise ValueError("Jina fallback content is empty or too short")
+                    else:
+                        raise requests.HTTPError(f"HTTP {jina_resp.status_code}")
+                except Exception as jina_error:
+                    last_error = f"{error} (Jina fallback also failed: {jina_error})"
 
-                if attempt < 2:
+                if attempt < 2 and not success:
                     time.sleep(
                         1.0 * attempt
                     )
 
         if not success:
-            print(
+            logger.error(
                 f"Scraping failed for {url}: "
                 f"{last_error}"
             )
@@ -338,4 +367,4 @@ def scrape_urls(urls: str) -> str:
             "from any source"
         )
 
-    return "\n=====\n".join(results)
+    return "\n=====\n".join(results)
