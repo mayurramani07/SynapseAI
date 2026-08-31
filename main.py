@@ -32,6 +32,14 @@ class ResearchRequest(BaseModel):
     topic: str
 
 
+class ChatRequest(BaseModel):
+    topic: str
+    report: str = ""
+    evidence: list = []
+    question: str
+    history: str = ""
+
+
 @app.get("/")
 def home():
     return {"message": "SynapseAI Backend Running"}
@@ -49,6 +57,42 @@ def research(request: ResearchRequest):
             "success": True,
             "topic": request.topic,
             "data": result
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/research/chat")
+def research_chat(request: ChatRequest):
+    """
+    Grounded follow-up chat endpoint ("Ask Synapse").
+    """
+    try:
+        if not request.question.strip():
+            raise HTTPException(status_code=400, detail="Question is required")
+
+        from agents import qa_chat_prompt, execute_prompt_with_fallback
+        from pipeline_validators import extract_text_from_llm_output
+
+        evidence_str = json.dumps(request.evidence, indent=2) if isinstance(request.evidence, list) else str(request.evidence)
+
+        response = execute_prompt_with_fallback(
+            qa_chat_prompt,
+            {
+                "topic": request.topic,
+                "report": request.report[:10000],
+                "evidence": evidence_str[:5000],
+                "history": request.history[:2000],
+                "question": request.question
+            }
+        )
+
+        answer = extract_text_from_llm_output(response)
+
+        return {
+            "success": True,
+            "answer": answer
         }
 
     except Exception as e:

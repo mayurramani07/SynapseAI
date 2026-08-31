@@ -13,7 +13,8 @@ from prompts import (
     insight_prompt,
     writer_prompt,
     critic_prompt,
-    improver_prompt
+    improver_prompt,
+    qa_chat_prompt
 )
 
 # Instantiate chains with default primary LLM (or fallback when invoked via execute_prompt_with_fallback)
@@ -24,6 +25,7 @@ insight_chain = insight_prompt | llm | StrOutputParser() if llm else None
 writer_chain = writer_prompt | llm | StrOutputParser() if llm else None
 critic_chain = critic_prompt | llm | StrOutputParser() if llm else None
 improver_chain = improver_prompt | llm | StrOutputParser() if llm else None
+qa_chat_chain = qa_chat_prompt | llm | StrOutputParser() if llm else None
 
 __all__ = [
     "EvidenceItem",
@@ -38,11 +40,13 @@ __all__ = [
     "writer_prompt",
     "critic_prompt",
     "improver_prompt",
+    "qa_chat_prompt",
     "reasoning_chain",
     "evidence_chain",
     "grounding_chain",
     "insight_chain",
     "writer_chain",
     "critic_chain",
-    "improver_chain"
+    "improver_chain",
+    "qa_chat_chain"
 ]

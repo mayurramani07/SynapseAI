@@ -266,16 +266,104 @@ def validate_content(text: str) -> bool:
     return True
 
 
+import asyncio
+import httpx
+
+
+async def async_scrape_single_url(url: str, client: httpx.AsyncClient, logger) -> str:
+    """
+    Scrape a single URL asynchronously with httpx and fallback to Jina Reader cloud API.
+    """
+    last_error = None
+    for attempt in range(1, 3):
+        try:
+            response = await client.get(url, timeout=12.0, follow_redirects=True)
+
+            if response.status_code != 200:
+                raise httpx.HTTPStatusError(
+                    f"HTTP {response.status_code}",
+                    request=response.request,
+                    response=response
+                )
+
+            content_type = response.headers.get("Content-Type", "").lower()
+            url_path = urlparse(str(response.url)).path.lower()
+            is_pdf = "application/pdf" in content_type or url_path.endswith(".pdf")
+
+            if is_pdf:
+                content = extract_pdf_content(response.content)
+            else:
+                content = extract_html_content(response.text)
+
+            if not validate_content(content):
+                raise ValueError("Extracted content is insufficient")
+
+            content = content[:6000]
+            return f"SOURCE: {response.url}\n{content}\n"
+
+        except Exception as error:
+            last_error = error
+
+            # Cloud bypass fallback: Try Jina Reader API
+            try:
+                logger.warning(
+                    f"Standard async scraping failed for {url} ({error}). "
+                    "Attempting Jina Reader cloud fallback..."
+                )
+                jina_url = f"https://r.jina.ai/{url}"
+                jina_resp = await client.get(jina_url, timeout=15.0, follow_redirects=True)
+
+                if jina_resp.status_code == 200:
+                    jina_content = jina_resp.text
+                    if validate_content(jina_content):
+                        content = jina_content[:6000]
+                        return f"SOURCE: {url}\n{content}\n"
+                    else:
+                        raise ValueError("Jina fallback content is empty or too short")
+                else:
+                    raise httpx.HTTPStatusError(
+                        f"HTTP {jina_resp.status_code}",
+                        request=jina_resp.request,
+                        response=jina_resp
+                    )
+            except Exception as jina_error:
+                last_error = f"{error} (Jina fallback also failed: {jina_error})"
+
+            if attempt < 2:
+                await asyncio.sleep(0.5 * attempt)
+
+    logger.error(f"Async scraping failed for {url}: {last_error}")
+    return None
+
+
+async def async_scrape_urls_list(url_list: list[str], logger) -> str:
+    """
+    Scrape multiple URLs concurrently using asyncio.gather.
+    """
+    async with httpx.AsyncClient(headers=HEADERS, follow_redirects=True, timeout=15.0) as client:
+        tasks = [async_scrape_single_url(url, client, logger) for url in url_list]
+        scraped_results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    valid_results = []
+    for res in scraped_results:
+        if isinstance(res, str) and res.strip():
+            valid_results.append(res)
+
+    if not valid_results:
+        raise ValueError("No usable content could be scraped from any source")
+
+    return "\n=====\n".join(valid_results)
+
+
 @tool
 def scrape_urls(urls: str) -> str:
     """
-    Scrape and extract usable text from the provided URLs.
+    Scrape and extract usable text from the provided URLs concurrently in parallel.
     Supports HTML pages and PDF documents. Includes a lightweight cloud fallback via Jina Reader API.
     """
     import logging
+    import concurrent.futures
     logger = logging.getLogger("synapseai")
-
-    results = []
 
     url_list = [
         url.strip()
@@ -283,88 +371,18 @@ def scrape_urls(urls: str) -> str:
         if url.strip()
     ]
 
-    for url in url_list:
-        success = False
-        last_error = None
+    if not url_list:
+        raise ValueError("No valid URLs provided to scrape")
 
-        for attempt in range(1, 3):
-            try:
-                response = session.get(
-                    url,
-                    timeout=12,
-                    allow_redirects=True
-                )
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
 
-                if response.status_code != 200:
-                    raise requests.HTTPError(
-                        f"HTTP {response.status_code}"
-                    )
-
-                content = extract_content(
-                    response
-                )
-
-                if not validate_content(
-                    content
-                ):
-                    raise ValueError(
-                        "Extracted content is insufficient"
-                    )
-
-                content = content[:6000]
-
-                results.append(
-                    f"SOURCE: {response.url}\n"
-                    f"{content}\n"
-                )
-
-                success = True
-                break
-
-            except Exception as error:
-                last_error = error
-                
-                # Cloud bypass fallback: Try Jina Reader API (lightweight, cloud-based, free tier friendly)
-                try:
-                    logger.warning(
-                        f"Standard scraping failed for {url} ({error}). "
-                        "Attempting Jina Reader cloud fallback..."
-                    )
-                    jina_url = f"https://r.jina.ai/{url}"
-                    jina_resp = session.get(jina_url, timeout=15)
-                    
-                    if jina_resp.status_code == 200:
-                        jina_content = jina_resp.text
-                        if validate_content(jina_content):
-                            content = jina_content[:6000]
-                            results.append(
-                                f"SOURCE: {url}\n"
-                                f"{content}\n"
-                            )
-                            success = True
-                            break
-                        else:
-                            raise ValueError("Jina fallback content is empty or too short")
-                    else:
-                        raise requests.HTTPError(f"HTTP {jina_resp.status_code}")
-                except Exception as jina_error:
-                    last_error = f"{error} (Jina fallback also failed: {jina_error})"
-
-                if attempt < 2 and not success:
-                    time.sleep(
-                        1.0 * attempt
-                    )
-
-        if not success:
-            logger.error(
-                f"Scraping failed for {url}: "
-                f"{last_error}"
-            )
-
-    if not results:
-        raise ValueError(
-            "No usable content could be scraped "
-            "from any source"
-        )
-
-    return "\n=====\n".join(results)
+    if loop and loop.is_running():
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            return pool.submit(
+                lambda: asyncio.run(async_scrape_urls_list(url_list, logger))
+            ).result()
+    else:
+        return asyncio.run(async_scrape_urls_list(url_list, logger))

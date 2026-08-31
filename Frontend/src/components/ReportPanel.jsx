@@ -13,13 +13,26 @@ import {
   Scale,
   ExternalLink,
   Code2,
-  FileCode
+  FileCode,
+  Sparkles,
+  MessageSquare,
+  Send,
+  ChevronDown,
+  ChevronUp,
+  Loader2
 } from "lucide-react";
+import { sendFollowUpQuestion } from "../api/research";
 
 function ReportPanel({ topic, completed, result, duration, liveLog }) {
   const [activeTab, setActiveTab] = useState("report");
   const [copied, setCopied] = useState(false);
   const [exportFormat, setExportFormat] = useState(null);
+
+  // Chat Drawer State
+  const [chatOpen, setChatOpen] = useState(true);
+  const [chatMessages, setChatMessages] = useState([]);
+  const [chatInput, setChatInput] = useState("");
+  const [chatLoading, setChatLoading] = useState(false);
 
   const finalReport = typeof result?.final_report === "object" ? (result?.final_report?.data || "") : (result?.final_report || "");
   const reasoning = typeof result?.reasoning === "object" ? (result?.reasoning?.data || "") : (result?.reasoning || "");
@@ -32,6 +45,45 @@ function ReportPanel({ topic, completed, result, duration, liveLog }) {
     : [];
   const insights = typeof result?.insights === "object" ? (result?.insights?.data || "") : (result?.insights || "");
   const feedback = typeof result?.feedback === "object" ? (result?.feedback?.data || "") : (result?.feedback || "");
+
+  const handleSendChat = async (queryText) => {
+    const question = queryText || chatInput;
+    if (!question.trim() || chatLoading) return;
+
+    const userMsg = { role: "user", text: question };
+    setChatMessages((prev) => [...prev, userMsg]);
+    setChatInput("");
+    setChatLoading(true);
+
+    try {
+      const historyStr = chatMessages
+        .map((m) => `${m.role.toUpperCase()}: ${m.text}`)
+        .join("\n");
+
+      const response = await sendFollowUpQuestion({
+        topic,
+        report: finalReport,
+        evidence: evidenceList,
+        question,
+        history: historyStr,
+      });
+
+      const assistantMsg = { role: "assistant", text: response.answer };
+      setChatMessages((prev) => [...prev, assistantMsg]);
+    } catch (err) {
+      setChatMessages((prev) => [
+        ...prev,
+        { role: "assistant", text: `⚠️ Error getting response: ${err.message}` },
+      ]);
+    } finally {
+      setChatLoading(false);
+    }
+  };
+
+  const handleChatSubmit = (e) => {
+    e.preventDefault();
+    handleSendChat();
+  };
 
   const fullMarkdownExport = `# SynapseAI Deep Research Report
 Topic: ${topic}
@@ -331,6 +383,73 @@ ${feedback}
                 </motion.div>
               )}
             </AnimatePresence>
+          </div>
+
+          {/* ASK SYNAPSE - GROUNDED FOLLOW-UP CHAT DRAWER */}
+          <div className="ask-synapse-drawer">
+            <div className="drawer-header" onClick={() => setChatOpen(!chatOpen)}>
+              <div className="drawer-title">
+                <Sparkles size={16} className="sparkle-icon" />
+                <span>Ask Synapse (Grounded Follow-up Assistant)</span>
+              </div>
+              <div className="drawer-toggle">
+                {chatOpen ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+              </div>
+            </div>
+
+            {chatOpen && (
+              <div className="drawer-body">
+                {chatMessages.length === 0 ? (
+                  <div className="chat-suggestions">
+                    <p className="suggestion-label">Suggested follow-up questions:</p>
+                    <div className="chip-list">
+                      <button onClick={() => handleSendChat("What are the key technical risks and trade-offs mentioned in the report?")}>
+                        What are the key technical risks & trade-offs?
+                      </button>
+                      <button onClick={() => handleSendChat("Summarize the top verified evidence claims.")}>
+                        Summarize the top verified evidence claims
+                      </button>
+                      <button onClick={() => handleSendChat("What actionable recommendations can we draw from this report?")}>
+                        What actionable recommendations can we draw?
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="chat-messages-container">
+                    {chatMessages.map((msg, index) => (
+                      <div key={index} className={`chat-message ${msg.role}`}>
+                        <div className="message-header">
+                          {msg.role === "assistant" ? <Sparkles size={13} /> : <MessageSquare size={13} />}
+                          <span>{msg.role === "assistant" ? "SynapseAI" : "You"}</span>
+                        </div>
+                        <div className="message-content">
+                          <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.text}</ReactMarkdown>
+                        </div>
+                      </div>
+                    ))}
+                    {chatLoading && (
+                      <div className="chat-message assistant loading">
+                        <Loader2 size={16} className="spin-icon" />
+                        <span>Analyzing report and verified evidence...</span>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                <form className="chat-input-row" onSubmit={handleChatSubmit}>
+                  <input
+                    type="text"
+                    placeholder="Ask a question about this research report..."
+                    value={chatInput}
+                    onChange={(e) => setChatInput(e.target.value)}
+                    disabled={chatLoading}
+                  />
+                  <button type="submit" disabled={!chatInput.trim() || chatLoading} className="chat-send-btn">
+                    {chatLoading ? <Loader2 size={16} className="spin-icon" /> : <Send size={15} />}
+                  </button>
+                </form>
+              </div>
+            )}
           </div>
         </div>
       )}

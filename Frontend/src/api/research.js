@@ -44,3 +44,27 @@ export function runResearchStream(topic, onEvent, onError) {
     eventSource.close();
   };
 }
+
+export async function sendFollowUpQuestion({ topic, report, evidence, question, history }) {
+  const response = await fetch(`${API_BASE_URL}/api/research/chat`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      topic,
+      report,
+      evidence,
+      question,
+      history,
+    }),
+  });
+
+  const data = await response.json();
+
+  if (!response.ok) {
+    throw new Error(data.detail || "Failed to get chat response");
+  }
+
+  return data;
+}
