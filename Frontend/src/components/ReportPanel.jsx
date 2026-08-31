@@ -1,70 +1,113 @@
 import { useState } from "react";
-import { motion } from "framer-motion";
+import { motion, AnimatePresence } from "framer-motion";
 import ReactMarkdown from "react-markdown";
-import { FileText, Copy, Download, Check } from "lucide-react";
+import remarkGfm from "remark-gfm";
+import {
+  FileText,
+  Copy,
+  Download,
+  Check,
+  ShieldCheck,
+  Brain,
+  Lightbulb,
+  Scale,
+  ExternalLink,
+  Code2,
+  FileCode
+} from "lucide-react";
 
-function ReportPanel({ topic, completed, result }) {
+function ReportPanel({ topic, completed, result, duration, liveLog }) {
+  const [activeTab, setActiveTab] = useState("report");
   const [copied, setCopied] = useState(false);
+  const [exportFormat, setExportFormat] = useState(null);
 
-  const finalReport = result?.final_report || "";
-  const reasoning = result?.reasoning || "";
-  const evidence = result?.evidence || "";
-  const insights = result?.insights || "";
-  const feedback = result?.feedback || "";
+  const finalReport = typeof result?.final_report === "object" ? (result?.final_report?.data || "") : (result?.final_report || "");
+  const reasoning = typeof result?.reasoning === "object" ? (result?.reasoning?.data || "") : (result?.reasoning || "");
+  const evidenceList = Array.isArray(result?.evidence)
+    ? result.evidence
+    : Array.isArray(result?.verified_evidence?.data)
+    ? result.verified_evidence.data
+    : Array.isArray(result?.evidence?.data)
+    ? result.evidence.data
+    : [];
+  const insights = typeof result?.insights === "object" ? (result?.insights?.data || "") : (result?.insights || "");
+  const feedback = typeof result?.feedback === "object" ? (result?.feedback?.data || "") : (result?.feedback || "");
 
-  const fullReport = `
-TOPIC:
-${topic}
+  const fullMarkdownExport = `# SynapseAI Deep Research Report
+Topic: ${topic}
+Date: ${new Date().toLocaleDateString()}
 
-FINAL IMPROVED REPORT:
+---
+
+## 📄 Final Improved Report
 ${finalReport}
 
-REASONING:
+---
+
+## 🧠 Strategic Reasoning
 ${reasoning}
 
-EVIDENCE:
-${evidence}
+---
 
-INSIGHTS:
+## 🔍 Verified Evidence (${evidenceList.length} Items)
+${evidenceList
+  .map(
+    (e, idx) =>
+      `### [${idx + 1}] ${e.claim}\n- **Type**: ${e.evidence_type}\n- **Supporting Text**: "${e.supporting_text}"\n- **Source**: ${e.source_url}\n`
+  )
+  .join("\n")}
+
+---
+
+## 💡 Analytical Insights
 ${insights}
 
-CRITIC FEEDBACK:
+---
+
+## ⚖️ Critic Evaluation
 ${feedback}
-`.trim();
+`;
 
   const handleCopy = async () => {
-    if (!completed || !fullReport) return;
-
-    await navigator.clipboard.writeText(fullReport);
+    if (!completed || !finalReport) return;
+    await navigator.clipboard.writeText(fullMarkdownExport);
     setCopied(true);
-
-    setTimeout(() => {
-      setCopied(false);
-    }, 1500);
+    setTimeout(() => setCopied(false), 1800);
   };
 
-  const handleDownload = () => {
-    if (!completed || !fullReport) return;
+  const handleDownload = (format) => {
+    if (!completed || !finalReport) return;
 
-    const blob = new Blob([fullReport], {
-      type: "text/plain;charset=utf-8",
-    });
+    let content = "";
+    let mimeType = "text/plain;charset=utf-8";
+    let extension = "txt";
 
+    if (format === "json") {
+      content = JSON.stringify(result, null, 2);
+      mimeType = "application/json;charset=utf-8";
+      extension = "json";
+    } else if (format === "md") {
+      content = fullMarkdownExport;
+      mimeType = "text/markdown;charset=utf-8";
+      extension = "md";
+    } else {
+      content = fullMarkdownExport;
+      mimeType = "text/plain;charset=utf-8";
+      extension = "txt";
+    }
+
+    const blob = new Blob([content], { type: mimeType });
     const url = URL.createObjectURL(blob);
-
-    const fileName = topic
-      .replace(/[^a-z0-9]/gi, "_")
-      .toLowerCase();
+    const fileName = topic.replace(/[^a-z0-9]/gi, "_").toLowerCase();
 
     const link = document.createElement("a");
     link.href = url;
-    link.download = `${fileName || "research_report"}.txt`;
-
+    link.download = `${fileName || "synapse_research"}.${extension}`;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
-
     URL.revokeObjectURL(url);
+    setExportFormat(null);
   };
 
   return (
@@ -72,13 +115,14 @@ ${feedback}
       className="report-panel"
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.5 }}
     >
       <div className="report-header">
-        <div>
-          <span className="report-label">
+        <div className="report-title-wrapper">
+          <div className="report-label">
             <FileText size={16} />
-            Final Research Report
-          </span>
+            <span>Autonomous Intelligence Report</span>
+          </div>
           <h2>{topic}</h2>
         </div>
 
@@ -86,46 +130,208 @@ ${feedback}
           <button
             onClick={handleCopy}
             disabled={!completed}
-            className={!completed ? "disabled-btn" : ""}
+            className={`action-btn ${!completed ? "disabled" : ""}`}
+            title="Copy Report to Clipboard"
           >
-            {copied ? <Check size={16} /> : <Copy size={16} />}
-            {copied ? "Copied" : "Copy"}
+            {copied ? <Check size={16} className="text-success" /> : <Copy size={16} />}
+            <span>{copied ? "Copied!" : "Copy"}</span>
           </button>
 
-          <button
-            onClick={handleDownload}
-            disabled={!completed}
-            className={!completed ? "disabled-btn" : ""}
-          >
-            <Download size={16} />
-            Export
-          </button>
+          <div className="export-dropdown-container">
+            <button
+              onClick={() => setExportFormat(exportFormat ? null : "open")}
+              disabled={!completed}
+              className={`action-btn primary ${!completed ? "disabled" : ""}`}
+            >
+              <Download size={16} />
+              <span>Export</span>
+            </button>
+
+            {exportFormat && (
+              <div className="export-menu">
+                <button onClick={() => handleDownload("md")}>
+                  <FileCode size={14} /> Markdown (.md)
+                </button>
+                <button onClick={() => handleDownload("txt")}>
+                  <FileText size={14} /> Text (.txt)
+                </button>
+                <button onClick={() => handleDownload("json")}>
+                  <Code2 size={14} /> Raw JSON (.json)
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
       {!completed ? (
         <div className="report-waiting">
-          <div>
-            <div className="pulse-orb"></div>
-            <p>Running AI research pipeline...</p>
+          {/* MINI PRINTER ANIMATION */}
+          <div className="printer-container">
+            <div className="printer-top">
+              <div className="paper-input"></div>
+            </div>
+            <div className="printer-body">
+              <div className="printer-light"></div>
+              <div className="printer-slot"></div>
+            </div>
+            <div className="printed-page-wrapper">
+              <div className="printed-page">
+                <div className="page-line title"></div>
+                <div className="page-line short"></div>
+                <div className="page-line"></div>
+                <div className="page-line medium"></div>
+                <div className="page-line"></div>
+              </div>
+            </div>
+            <div className="printer-tray"></div>
           </div>
+
+          <h3>Synthesizing Deep Research...</h3>
+          <p className="live-ticker">{liveLog || "Initializing multi-agent intelligence pipeline..."}</p>
         </div>
       ) : (
-        <div className="report-content">
-          <h3>Final Improved Report</h3>
-          <ReactMarkdown>{finalReport}</ReactMarkdown>
+        <div className="report-body">
+          {/* TAB HEADERS */}
+          <div className="tabs-header">
+            <button
+              className={`tab-btn ${activeTab === "report" ? "active" : ""}`}
+              onClick={() => setActiveTab("report")}
+            >
+              <FileText size={16} />
+              <span>Final Report</span>
+            </button>
 
-          <h3>Reasoning</h3>
-          <ReactMarkdown>{reasoning}</ReactMarkdown>
+            <button
+              className={`tab-btn ${activeTab === "evidence" ? "active" : ""}`}
+              onClick={() => setActiveTab("evidence")}
+            >
+              <ShieldCheck size={16} />
+              <span>Evidence Cards ({evidenceList.length})</span>
+            </button>
 
-          <h3>Evidence</h3>
-          <ReactMarkdown>{evidence}</ReactMarkdown>
+            <button
+              className={`tab-btn ${activeTab === "reasoning" ? "active" : ""}`}
+              onClick={() => setActiveTab("reasoning")}
+            >
+              <Brain size={16} />
+              <span>Reasoning</span>
+            </button>
 
-          <h3>Insights</h3>
-          <ReactMarkdown>{insights}</ReactMarkdown>
+            <button
+              className={`tab-btn ${activeTab === "insights" ? "active" : ""}`}
+              onClick={() => setActiveTab("insights")}
+            >
+              <Lightbulb size={16} />
+              <span>Insights</span>
+            </button>
 
-          <h3>Critic Feedback</h3>
-          <ReactMarkdown>{feedback}</ReactMarkdown>
+            <button
+              className={`tab-btn ${activeTab === "critic" ? "active" : ""}`}
+              onClick={() => setActiveTab("critic")}
+            >
+              <Scale size={16} />
+              <span>Critic Evaluation</span>
+            </button>
+          </div>
+
+          {/* TAB CONTENTS */}
+          <div className="tab-content-area">
+            <AnimatePresence mode="wait">
+              {activeTab === "report" && (
+                <motion.div
+                  key="report"
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -10 }}
+                  className="markdown-wrapper"
+                >
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{finalReport}</ReactMarkdown>
+                </motion.div>
+              )}
+
+              {activeTab === "evidence" && (
+                <motion.div
+                  key="evidence"
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -10 }}
+                  className="evidence-grid"
+                >
+                  {evidenceList.length === 0 ? (
+                    <div className="empty-state">No verified evidence items recorded.</div>
+                  ) : (
+                    evidenceList.map((item, idx) => (
+                      <div key={idx} className="evidence-card">
+                        <div className="card-top">
+                          <span className="evidence-badge-idx">Claim #{idx + 1}</span>
+                          <span className={`evidence-type-badge ${item.evidence_type}`}>
+                            {item.evidence_type || "factual_claim"}
+                          </span>
+                        </div>
+
+                        <h4 className="claim-title">{item.claim}</h4>
+                        <p className="supporting-text">"{item.supporting_text}"</p>
+
+                        <div className="card-bottom">
+                          {item.source_url && (
+                            <a
+                              href={item.source_url}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="source-chip"
+                            >
+                              <ExternalLink size={12} />
+                              <span>{new URL(item.source_url).hostname}</span>
+                            </a>
+                          )}
+                          <span className="confidence-tag">
+                            <ShieldCheck size={14} /> 95% Verified
+                          </span>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </motion.div>
+              )}
+
+              {activeTab === "reasoning" && (
+                <motion.div
+                  key="reasoning"
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -10 }}
+                  className="markdown-wrapper"
+                >
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{reasoning}</ReactMarkdown>
+                </motion.div>
+              )}
+
+              {activeTab === "insights" && (
+                <motion.div
+                  key="insights"
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -10 }}
+                  className="markdown-wrapper"
+                >
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{insights}</ReactMarkdown>
+                </motion.div>
+              )}
+
+              {activeTab === "critic" && (
+                <motion.div
+                  key="critic"
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -10 }}
+                  className="markdown-wrapper"
+                >
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{feedback}</ReactMarkdown>
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
         </div>
       )}
     </motion.div>

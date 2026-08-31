@@ -203,7 +203,7 @@ def run_research_pipeline(topic):
         operation=lambda: normalize_evidence_output(
             execute_prompt_with_fallback(
                 evidence_prompt,
-                {"research": research_data},
+                {"research": f"SEARCH DATA & SOURCES:\n{search_data}\n\nRESEARCH CONTENT:\n{research_data}"},
                 json_mode=True
             )
         ),
@@ -878,8 +878,13 @@ def run_research_pipeline_stream(topic):
         "stage": "pipeline",
         "status": "completed",
         "duration": total_duration,
-        "final_report": final_report_text
+        "final_report": final_report_text,
+        "reasoning": reasoning_data,
+        "evidence": evidence_data,
+        "insights": insights_data,
+        "feedback": feedback_data
     }
+
 
 
 # ============================================================
