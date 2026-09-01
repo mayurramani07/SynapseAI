@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
-import { ArrowLeft, BrainCircuit, Activity, AlertCircle, Clock, ShieldCheck, Layers } from "lucide-react";
+import { ArrowLeft, BrainCircuit, Activity, AlertCircle, Clock, ShieldCheck, Layers, Zap } from "lucide-react";
 import PipelineStep from "../components/PipelineStep";
 import ReportPanel from "../components/ReportPanel";
 import { runResearch, runResearchStream } from "../api/research";
@@ -31,6 +31,8 @@ function Research() {
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
 
   const timerRef = useRef(null);
+
+  const isCached = Boolean(result?.cached);
 
   useEffect(() => {
     let cleanupStream = null;
@@ -122,19 +124,33 @@ function Research() {
 
       <section className="research-top">
         <div className="top-row">
-          <motion.div
-            className={completed ? "research-badge completed" : "research-badge active"}
-            initial={{ opacity: 0, y: 12 }}
-            animate={{ opacity: 1, y: 0 }}
-          >
-            <Activity size={14} className={completed ? "" : "pulse-icon"} />
-            <span>{completed ? "Pipeline Completed" : "Pipeline Running"}</span>
-          </motion.div>
+          <div className="badge-group">
+            <motion.div
+              className={completed ? "research-badge completed" : "research-badge active"}
+              initial={{ opacity: 0, y: 12 }}
+              animate={{ opacity: 1, y: 0 }}
+            >
+              <Activity size={14} className={completed ? "" : "pulse-icon"} />
+              <span>{completed ? "Pipeline Completed" : "Pipeline Running"}</span>
+            </motion.div>
+
+            {isCached && (
+              <motion.div
+                className="research-badge cached-badge"
+                initial={{ opacity: 0, scale: 0.9 }}
+                animate={{ opacity: 1, scale: 1 }}
+                transition={{ duration: 0.3 }}
+              >
+                <Zap size={14} className="zap-badge-icon" />
+                <span>⚡ Instant Cached Result</span>
+              </motion.div>
+            )}
+          </div>
 
           <div className="metrics-summary-bar">
             <div className="metric-item">
               <Clock size={14} />
-              <span>{elapsedSeconds}s elapsed</span>
+              <span>{isCached ? "0.1s (Instant)" : `${elapsedSeconds}s elapsed`}</span>
             </div>
             <div className="metric-item">
               <Layers size={14} />

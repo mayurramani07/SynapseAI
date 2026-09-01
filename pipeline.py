@@ -92,12 +92,21 @@ def rank_urls(urls):
 
 
 # ============================================================
+from cache_manager import get_cached_research, set_cached_research
+
+# ============================================================
 # MAIN PIPELINE
 # ============================================================
 
 def run_research_pipeline(topic):
     request_id = str(uuid.uuid4())
     pipeline_start = time.time()
+
+    # Check local cache first
+    cached_result = get_cached_research(topic)
+    if cached_result:
+        logger.info("Local cache hit for topic: %s", topic)
+        return cached_result
 
     log_event(
         request_id,
@@ -502,6 +511,8 @@ def run_research_pipeline(topic):
     logger.info("FINAL REPORT")
     logger.debug("%s", final_report.get("data") or "No final report was generated.")
 
+    set_cached_research(topic, state)
+
     return state
 
 
@@ -512,6 +523,31 @@ def run_research_pipeline(topic):
 def run_research_pipeline_stream(topic):
     request_id = str(uuid.uuid4())
     pipeline_start = time.time()
+
+    # Check local cache first
+    cached_data = get_cached_research(topic)
+    if cached_data:
+        logger.info("Local cache hit for stream topic: %s", topic)
+        yield {
+            "event": "stage_start",
+            "stage": "Cache Lookup",
+            "message": "⚡ Instant local cache match found!",
+            "request_id": request_id
+        }
+        time.sleep(0.1)
+        yield {
+            "event": "pipeline_complete",
+            "stage": "pipeline",
+            "status": "completed",
+            "cached": True,
+            "duration": 0.05,
+            "final_report": cached_data.get("final_report") or cached_data.get("final_report_text") or "",
+            "reasoning": cached_data.get("reasoning") or "",
+            "evidence": cached_data.get("evidence") or [],
+            "insights": cached_data.get("insights") or "",
+            "feedback": cached_data.get("feedback") or ""
+        }
+        return
 
     yield {
         "event": "stage_start",
@@ -873,10 +909,11 @@ def run_research_pipeline_stream(topic):
 
     total_duration = round(time.time() - pipeline_start, 2)
 
-    yield {
+    completed_payload = {
         "event": "pipeline_complete",
         "stage": "pipeline",
         "status": "completed",
+        "cached": False,
         "duration": total_duration,
         "final_report": final_report_text,
         "reasoning": reasoning_data,
@@ -884,6 +921,9 @@ def run_research_pipeline_stream(topic):
         "insights": insights_data,
         "feedback": feedback_data
     }
+
+    set_cached_research(topic, completed_payload)
+    yield completed_payload
 
 
 

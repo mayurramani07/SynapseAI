@@ -1774,3 +1774,43 @@ button {
   opacity: 0.4;
   cursor: not-allowed;
 }
+
+/* CACHE BADGES & PILLS */
+.badge-group {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.cached-badge {
+  background: linear-gradient(135deg, rgba(245, 158, 11, 0.12), rgba(234, 88, 12, 0.12));
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  color: #b45309;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 9999px;
+  font-size: 12px;
+  box-shadow: 0 0 10px rgba(245, 158, 11, 0.15);
+}
+
+.zap-badge-icon {
+  color: #f59e0b;
+  fill: #f59e0b;
+}
+
+.cache-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(245, 158, 11, 0.15);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  color: #d97706;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 12px;
+  margin-left: 8px;
+}

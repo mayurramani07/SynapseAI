@@ -11,6 +11,7 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
+.cache/
 
 # VS Code
 .vscode/
@@ -31,3 +32,5 @@ build/
 
 # Misc
 *.sqlite3
+
+*.walkthrough.md

@@ -19,7 +19,8 @@ import {
   Send,
   ChevronDown,
   ChevronUp,
-  Loader2
+  Loader2,
+  Zap
 } from "lucide-react";
 import { sendFollowUpQuestion } from "../api/research";
 
@@ -33,6 +34,8 @@ function ReportPanel({ topic, completed, result, duration, liveLog }) {
   const [chatMessages, setChatMessages] = useState([]);
   const [chatInput, setChatInput] = useState("");
   const [chatLoading, setChatLoading] = useState(false);
+
+  const isCached = Boolean(result?.cached);
 
   const finalReport = typeof result?.final_report === "object" ? (result?.final_report?.data || "") : (result?.final_report || "");
   const reasoning = typeof result?.reasoning === "object" ? (result?.reasoning?.data || "") : (result?.reasoning || "");
@@ -174,6 +177,11 @@ ${feedback}
           <div className="report-label">
             <FileText size={16} />
             <span>Autonomous Intelligence Report</span>
+            {isCached && (
+              <span className="cache-pill">
+                <Zap size={11} /> ⚡ Instant Cached
+              </span>
+            )}
           </div>
           <h2>{topic}</h2>
         </div>
