@@ -222,41 +222,36 @@ export default function KnowledgeGraph({ topic, evidenceList = [], reasoning = "
           <div className="graph-nodes-grid">
             {filteredNodes.map((node) => {
               const isSelected = selectedNode?.id === node.id;
-              let icon = <Brain size={18} />;
-              let badgeColor = "purple";
+              let icon = <Brain size={16} />;
+              let typeLabel = node.category;
 
-              if (node.type === "source") {
-                icon = <Globe size={18} />;
-                badgeColor = "cyan";
-              } else if (node.type === "evidence") {
-                icon = <ShieldCheck size={18} />;
-                badgeColor = "emerald";
-              } else if (node.type === "insight") {
-                icon = <Lightbulb size={18} />;
-                badgeColor = "amber";
-              }
+              if (node.type === "source") icon = <Globe size={16} />;
+              else if (node.type === "evidence") icon = <ShieldCheck size={16} />;
+              else if (node.type === "insight") icon = <Lightbulb size={16} />;
+
+              const confHigh = node.confidence && node.confidence >= 75;
 
               return (
                 <motion.div
                   key={node.id}
                   layout
-                  initial={{ opacity: 0, scale: 0.9 }}
+                  initial={{ opacity: 0, scale: 0.95 }}
                   animate={{ opacity: 1, scale: 1 }}
-                  exit={{ opacity: 0, scale: 0.9 }}
+                  exit={{ opacity: 0, scale: 0.95 }}
                   className={`graph-node-card ${node.type} ${isSelected ? "selected" : ""}`}
                   onClick={() => setSelectedNode(node)}
                 >
-                  <div className={`node-icon-wrapper ${badgeColor}`}>
+                  <div className="node-icon-wrapper">
                     {icon}
                   </div>
                   <div className="node-info">
-                    <span className={`node-type-tag ${badgeColor}`}>
-                      {node.category}
+                    <span className={`node-type-tag ${node.type}`}>
+                      {typeLabel}
                     </span>
                     <h4 className="node-title">{node.label}</h4>
                     {node.confidence && (
-                      <span className="confidence-pill">
-                        ⚡ {node.confidence}% Verified
+                      <span className={`confidence-pill ${confHigh ? "conf-high" : "conf-low"}`}>
+                        {node.confidence}% Verified
                       </span>
                     )}
                   </div>
@@ -295,7 +290,9 @@ export default function KnowledgeGraph({ topic, evidenceList = [], reasoning = "
                     {selectedNode.confidence && (
                       <div className="meta-badge">
                         <span className="meta-key">Grounding:</span>
-                        <span className="meta-val emerald-text">{selectedNode.confidence}% Verified</span>
+                        <span className={`meta-val ${selectedNode.confidence >= 75 ? "conf-high" : "conf-low"}`}>
+                          {selectedNode.confidence}% Verified
+                        </span>
                       </div>
                     )}
                   </div>
