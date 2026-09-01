@@ -21,9 +21,11 @@ import {
   ChevronUp,
   Loader2,
   Zap,
-  RotateCw
+  RotateCw,
+  Share2
 } from "lucide-react";
 import { sendFollowUpQuestion } from "../api/research";
+import KnowledgeGraph from "./KnowledgeGraph";
 
 function ReportPanel({ topic, completed, result, duration, liveLog }) {
   const [activeTab, setActiveTab] = useState("report");
@@ -294,6 +296,14 @@ ${feedback}
               <Scale size={16} />
               <span>Critic Evaluation</span>
             </button>
+
+            <button
+              className={`tab-btn ${activeTab === "graph" ? "active" : ""}`}
+              onClick={() => setActiveTab("graph")}
+            >
+              <Share2 size={16} />
+              <span>Knowledge Graph</span>
+            </button>
           </div>
 
           {/* TAB CONTENTS */}
@@ -389,6 +399,23 @@ ${feedback}
                   className="markdown-wrapper"
                 >
                   <ReactMarkdown remarkPlugins={[remarkGfm]}>{feedback}</ReactMarkdown>
+                </motion.div>
+              )}
+
+              {activeTab === "graph" && (
+                <motion.div
+                  key="graph"
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -10 }}
+                  className="graph-tab-wrapper"
+                >
+                  <KnowledgeGraph
+                    topic={topic}
+                    evidenceList={evidenceList}
+                    reasoning={reasoning}
+                    insights={insights}
+                  />
                 </motion.div>
               )}
             </AnimatePresence>
