@@ -20,7 +20,8 @@ import {
   ChevronDown,
   ChevronUp,
   Loader2,
-  Zap
+  Zap,
+  RotateCw
 } from "lucide-react";
 import { sendFollowUpQuestion } from "../api/research";
 
@@ -166,7 +167,7 @@ ${feedback}
   };
 
   return (
-    <motion.div
+    <motion.section
       className="report-panel"
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
@@ -461,7 +462,7 @@ ${feedback}
           </div>
         </div>
       )}
-    </motion.div>
+    </motion.section>
   );
 }
 

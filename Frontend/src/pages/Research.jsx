@@ -1,7 +1,7 @@
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef, useCallback } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
-import { ArrowLeft, BrainCircuit, Activity, AlertCircle, Clock, ShieldCheck, Layers, Zap } from "lucide-react";
+import { ArrowLeft, BrainCircuit, Activity, AlertCircle, Clock, ShieldCheck, Layers, Zap, RotateCw } from "lucide-react";
 import PipelineStep from "../components/PipelineStep";
 import ReportPanel from "../components/ReportPanel";
 import { runResearch, runResearchStream } from "../api/research";
@@ -29,88 +29,110 @@ function Research() {
   const [error, setError] = useState("");
   const [liveLog, setLiveLog] = useState("Initializing research workflow...");
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [isReanalyzing, setIsReanalyzing] = useState(false);
 
   const timerRef = useRef(null);
+  const cleanupStreamRef = useRef(null);
 
   const isCached = Boolean(result?.cached);
 
-  useEffect(() => {
-    let cleanupStream = null;
+  const executeWorkflow = useCallback((forceNocache = false) => {
+    if (cleanupStreamRef.current) {
+      cleanupStreamRef.current();
+    }
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+    }
 
+    setError("");
+    setCompleted(false);
+    setResult(null);
+    setActiveStep(0);
     setElapsedSeconds(0);
+    setIsReanalyzing(forceNocache);
+    setLiveLog(forceNocache ? "Forcing fresh re-analysis..." : "Initializing research workflow...");
+
     timerRef.current = setInterval(() => {
       setElapsedSeconds((prev) => prev + 1);
     }, 1000);
 
-    async function executeWorkflow() {
-      setError("");
-      setCompleted(false);
-      setActiveStep(0);
-
-      // Attempt SSE live stream
-      try {
-        cleanupStream = runResearchStream(
-          topic,
-          (event) => {
-            if (event.message) {
-              setLiveLog(event.message);
-            }
-
-            if (event.stage) {
-              const stageName = event.stage.toLowerCase();
-              if (stageName.includes("search")) setActiveStep(0);
-              else if (stageName.includes("scrap")) setActiveStep(1);
-              else if (stageName.includes("reason")) setActiveStep(2);
-              else if (stageName.includes("extraction")) setActiveStep(3);
-              else if (stageName.includes("grounding")) setActiveStep(4);
-              else if (stageName.includes("insight")) setActiveStep(5);
-              else if (stageName.includes("writer")) setActiveStep(6);
-              else if (stageName.includes("critic") || stageName.includes("improver")) setActiveStep(7);
-            }
-
-            if (event.event === "pipeline_complete" || event.final_report) {
-              clearInterval(timerRef.current);
-              setActiveStep(steps.length);
-              setCompleted(true);
-              setResult(event);
-            }
-          },
-          async (streamErr) => {
-            // Fallback to standard POST endpoint if SSE fails or isn't proxied
-            try {
-              const response = await runResearch(topic);
-              clearInterval(timerRef.current);
-              setActiveStep(steps.length);
-              setResult(response.data);
-              setCompleted(true);
-            } catch (fallbackErr) {
-              clearInterval(timerRef.current);
-              setError(fallbackErr.message || "Research failed.");
-            }
+    // Attempt SSE live stream
+    try {
+      cleanupStreamRef.current = runResearchStream(
+        topic,
+        (event) => {
+          if (event.message) {
+            setLiveLog(event.message);
           }
-        );
-      } catch (err) {
-        // Direct POST fallback
+
+          if (event.stage) {
+            const stageName = event.stage.toLowerCase();
+            if (stageName.includes("search")) setActiveStep(0);
+            else if (stageName.includes("scrap")) setActiveStep(1);
+            else if (stageName.includes("reason")) setActiveStep(2);
+            else if (stageName.includes("extraction")) setActiveStep(3);
+            else if (stageName.includes("grounding")) setActiveStep(4);
+            else if (stageName.includes("insight")) setActiveStep(5);
+            else if (stageName.includes("writer")) setActiveStep(6);
+            else if (stageName.includes("critic") || stageName.includes("improver")) setActiveStep(7);
+          }
+
+          if (event.event === "pipeline_complete" || event.final_report) {
+            if (timerRef.current) clearInterval(timerRef.current);
+            setActiveStep(steps.length);
+            setCompleted(true);
+            setIsReanalyzing(false);
+            setResult(event);
+          }
+        },
+        async (streamErr) => {
+          // Fallback to standard POST endpoint if SSE fails or isn't proxied
+          try {
+            const response = await runResearch(topic, forceNocache);
+            if (timerRef.current) clearInterval(timerRef.current);
+            setActiveStep(steps.length);
+            setResult(response.data);
+            setCompleted(true);
+            setIsReanalyzing(false);
+          } catch (fallbackErr) {
+            if (timerRef.current) clearInterval(timerRef.current);
+            setError(fallbackErr.message || "Research failed.");
+            setIsReanalyzing(false);
+          }
+        },
+        forceNocache
+      );
+    } catch (err) {
+      // Direct POST fallback
+      (async () => {
         try {
-          const response = await runResearch(topic);
-          clearInterval(timerRef.current);
+          const response = await runResearch(topic, forceNocache);
+          if (timerRef.current) clearInterval(timerRef.current);
           setActiveStep(steps.length);
           setResult(response.data);
           setCompleted(true);
+          setIsReanalyzing(false);
         } catch (fallbackErr) {
-          clearInterval(timerRef.current);
+          if (timerRef.current) clearInterval(timerRef.current);
           setError(fallbackErr.message || "Research failed.");
+          setIsReanalyzing(false);
         }
-      }
+      })();
     }
+  }, [topic]);
 
-    executeWorkflow();
+  useEffect(() => {
+    executeWorkflow(false);
 
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
-      if (cleanupStream) cleanupStream();
+      if (cleanupStreamRef.current) cleanupStreamRef.current();
     };
-  }, [topic]);
+  }, [topic, executeWorkflow]);
+
+  const handleReanalyze = () => {
+    executeWorkflow(true);
+  };
 
   return (
     <main className="research-page">
@@ -145,6 +167,16 @@ function Research() {
                 <span>⚡ Instant Cached Result</span>
               </motion.div>
             )}
+
+            <button
+              className="reanalyze-top-btn"
+              onClick={handleReanalyze}
+              disabled={isReanalyzing || !completed}
+              title="Force fresh deep research by bypassing cache"
+            >
+              <RotateCw size={13} className={isReanalyzing ? "spin-icon" : ""} />
+              <span>{isReanalyzing ? "Re-analyzing..." : "⚡ Re-analyze Topic"}</span>
+            </button>
           </div>
 
           <div className="metrics-summary-bar">

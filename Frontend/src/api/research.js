@@ -1,12 +1,12 @@
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
 
-export async function runResearch(topic) {
+export async function runResearch(topic, nocache = false) {
   const response = await fetch(`${API_BASE_URL}/api/research`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ topic }),
+    body: JSON.stringify({ topic, nocache }),
   });
 
   const data = await response.json();
@@ -18,8 +18,8 @@ export async function runResearch(topic) {
   return data;
 }
 
-export function runResearchStream(topic, onEvent, onError) {
-  const url = `${API_BASE_URL}/api/research/stream?topic=${encodeURIComponent(topic)}`;
+export function runResearchStream(topic, onEvent, onError, nocache = false) {
+  const url = `${API_BASE_URL}/api/research/stream?topic=${encodeURIComponent(topic)}&nocache=${nocache}`;
   const eventSource = new EventSource(url);
 
   eventSource.onmessage = (event) => {

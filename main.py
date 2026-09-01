@@ -30,6 +30,7 @@ app.add_middleware(
 
 class ResearchRequest(BaseModel):
     topic: str
+    nocache: bool = False
 
 
 class ChatRequest(BaseModel):
@@ -51,7 +52,7 @@ def research(request: ResearchRequest):
         if not request.topic.strip():
             raise HTTPException(status_code=400, detail="Topic is required")
 
-        result = run_research_pipeline(request.topic)
+        result = run_research_pipeline(request.topic, nocache=request.nocache)
 
         return {
             "success": True,
@@ -100,7 +101,7 @@ def research_chat(request: ChatRequest):
 
 
 @app.get("/api/research/stream")
-def research_stream(topic: str):
+def research_stream(topic: str, nocache: bool = False):
     """
     Server-Sent Events (SSE) endpoint for real-time live research streaming progress.
     """
@@ -108,7 +109,7 @@ def research_stream(topic: str):
         raise HTTPException(status_code=400, detail="Topic is required")
 
     def event_generator():
-        for event in run_research_pipeline_stream(topic.strip()):
+        for event in run_research_pipeline_stream(topic.strip(), nocache=nocache):
             yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(
