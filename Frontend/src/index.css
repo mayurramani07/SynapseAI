@@ -744,13 +744,13 @@ button {
   background: #ffffff;
   border: 1px solid var(--border-glass-bright);
   border-radius: 10px;
-  padding: 4px;
+  padding: 5px;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
   z-index: 30;
-  width: 155px;
+  width: 185px;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 3px;
 }
 
 .export-menu button {
@@ -760,17 +760,31 @@ button {
   background: transparent;
   border: none;
   color: var(--text-main);
-  padding: 6px 10px;
+  padding: 7px 10px;
   border-radius: 6px;
   font-size: 12px;
   font-weight: 500;
   cursor: pointer;
   text-align: left;
+  transition: all 0.15s ease;
 }
 
 .export-menu button:hover {
   background: #f4f4f5;
   color: #000000;
+}
+
+.export-menu button.pdf-export-btn {
+  font-weight: 600;
+  color: #000000;
+  background: #fafafa;
+  border: 1px solid var(--border-glass);
+}
+
+.export-menu button.pdf-export-btn:hover {
+  background: #000000;
+  color: #ffffff;
+  border-color: #000000;
 }
 
 /* WAITING STATE */

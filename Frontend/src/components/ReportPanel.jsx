@@ -26,6 +26,7 @@ import {
 } from "lucide-react";
 import { sendFollowUpQuestion } from "../api/research";
 import KnowledgeGraph from "./KnowledgeGraph";
+import { exportToPublicationPdf } from "../utils/pdfExporter";
 
 function ReportPanel({ topic, completed, result, duration, liveLog }) {
   const [activeTab, setActiveTab] = useState("report");
@@ -136,6 +137,12 @@ ${feedback}
   const handleDownload = (format) => {
     if (!completed || !finalReport) return;
 
+    if (format === "pdf") {
+      exportToPublicationPdf(topic, result, duration);
+      setExportFormat(null);
+      return;
+    }
+
     let content = "";
     let mimeType = "text/plain;charset=utf-8";
     let extension = "txt";
@@ -212,6 +219,9 @@ ${feedback}
 
             {exportFormat && (
               <div className="export-menu">
+                <button onClick={() => handleDownload("pdf")} className="pdf-export-btn">
+                  <FileText size={14} className="text-pdf-icon" /> Executive PDF (.pdf)
+                </button>
                 <button onClick={() => handleDownload("md")}>
                   <FileCode size={14} /> Markdown (.md)
                 </button>
