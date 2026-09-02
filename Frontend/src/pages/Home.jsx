@@ -93,13 +93,15 @@ function Home() {
           transition={{ delay: 0.3, duration: 0.5 }}
         >
           <div className="search-box">
-            <Search className="search-icon" size={20} />
-            <input
-              placeholder="Enter any complex research topic..."
-              value={topic}
-              onChange={(e) => setTopic(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && handleStart()}
-            />
+            <div className="search-input-wrapper">
+              <Search className="search-icon" size={18} />
+              <input
+                placeholder="Enter any complex research topic..."
+                value={topic}
+                onChange={(e) => setTopic(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && handleStart()}
+              />
+            </div>
             <button onClick={() => handleStart()} className="glow-btn">
               <span>Start Research</span>
               <ArrowRight size={16} />
