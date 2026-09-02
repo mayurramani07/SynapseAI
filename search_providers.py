@@ -257,6 +257,11 @@ def multi_provider_web_search(query: str, log_callback=None) -> tuple[str, str]:
         success, reason, results = search_fn(query)
 
         if success and len(results) >= 2:
+            try:
+                from telemetry_manager import record_provider_call
+                record_provider_call(name, True)
+            except Exception:
+                pass
             msg = f"[Search Engine] Provider {name} succeeded with {len(results)} high-quality results."
             logger.info(msg)
             if log_callback:
@@ -278,6 +283,11 @@ def multi_provider_web_search(query: str, log_callback=None) -> tuple[str, str]:
             return "\n----\n".join(output), name
 
         else:
+            try:
+                from telemetry_manager import record_provider_call
+                record_provider_call(name, False, error_msg=reason)
+            except Exception:
+                pass
             warn_msg = f"[Search Fallback] Provider {name} failed or returned poor results ({reason}). Switching to next provider..."
             logger.warning(warn_msg)
             fallback_logs.append(warn_msg)

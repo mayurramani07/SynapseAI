@@ -62,6 +62,10 @@ function Navbar() {
           <NavLink to="/engineering" className="nav-link">
             Engineering
           </NavLink>
+
+          <NavLink to="/analytics" className="nav-link analytics-link" title="Grafana Telemetry (Admin Only)">
+            Telemetry
+          </NavLink>
         </div>
 
         {/* Hamburger Button (mobile only) */}

@@ -160,6 +160,11 @@ def run_research_pipeline(topic, nocache=False):
         cached_result = get_cached_research(topic)
         if cached_result:
             logger.info("Local cache hit for topic: %s", topic)
+            try:
+                from telemetry_manager import record_research_run
+                record_research_run(cached=True)
+            except Exception:
+                pass
             return cached_result
 
     log_event(
@@ -549,6 +554,12 @@ def run_research_pipeline(topic, nocache=False):
     logger.info("FINAL REPORT")
     logger.debug("%s", final_report.get("data") or "No final report was generated.")
 
+    try:
+        from telemetry_manager import record_research_run
+        record_research_run(cached=False, duration=total_duration)
+    except Exception:
+        pass
+
     set_cached_research(topic, state)
 
     return state
@@ -567,6 +578,11 @@ def run_research_pipeline_stream(topic, nocache=False):
         cached_data = get_cached_research(topic)
         if cached_data:
             logger.info("Local cache hit for stream topic: %s", topic)
+            try:
+                from telemetry_manager import record_research_run
+                record_research_run(cached=True)
+            except Exception:
+                pass
             yield {
                 "event": "stage_start",
                 "stage": "Cache Lookup",
@@ -944,6 +960,12 @@ def run_research_pipeline_stream(topic, nocache=False):
         "insights": insights_data,
         "feedback": feedback_data
     }
+
+    try:
+        from telemetry_manager import record_research_run
+        record_research_run(cached=False, duration=total_duration)
+    except Exception:
+        pass
 
     set_cached_research(topic, completed_payload)
     yield completed_payload

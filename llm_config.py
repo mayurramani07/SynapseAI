@@ -1,4 +1,5 @@
 import os
+import time
 from dotenv import load_dotenv
 from langchain_core.output_parsers import StrOutputParser
 from langchain_groq import ChatGroq
@@ -83,6 +84,7 @@ def execute_prompt_with_fallback(prompt, input_dict, json_mode=False):
 
     for provider in providers:
         try:
+            start_t = time.time()
             provider_llm = provider["llm"]
 
             # Apply JSON mode if the provider supports it (Groq / OpenAI compatible)
@@ -96,6 +98,23 @@ def execute_prompt_with_fallback(prompt, input_dict, json_mode=False):
 
             chain = prompt | provider_llm | StrOutputParser()
             result = chain.invoke(input_dict)
+            elapsed_t = time.time() - start_t
+            
+            try:
+                from telemetry_manager import record_llm_call
+                # Estimate token counts based on input string length and output length
+                input_str = str(input_dict)
+                p_tokens = max(100, len(input_str) // 4)
+                c_tokens = max(50, len(str(result)) // 4)
+                record_llm_call(
+                    prompt_tokens_est=p_tokens,
+                    completion_tokens_est=c_tokens,
+                    model=provider.get("name", "groq-llm"),
+                    duration=round(elapsed_t, 2)
+                )
+            except Exception:
+                pass
+
             return result
         except Exception as error:
             last_error = error

@@ -47,6 +47,13 @@ def log_event(
         )
     )
 
+    if duration and duration > 0 and status in ("success", "degraded", "completed") and stage not in ("pipeline", "Cache Lookup"):
+        try:
+            from telemetry_manager import record_stage_duration
+            record_stage_duration(stage, duration)
+        except Exception:
+            pass
+
 
 def stage_success(
     data,

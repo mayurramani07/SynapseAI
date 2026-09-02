@@ -118,6 +118,54 @@ def research_stream(topic: str, nocache: bool = False):
     )
 
 
+# -----------------------------------------------------------------
+# ADMIN & GRAFANA TELEMETRY ENDPOINTS
+# -----------------------------------------------------------------
+from fastapi import Header
+
+def get_admin_passcode():
+    env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+    load_dotenv(dotenv_path=env_path, override=True)
+    return os.getenv("ADMIN_PASSCODE", "admin123")
+
+
+def _verify_admin(x_admin_passcode: str = Header(None, alias="X-Admin-Passcode")):
+    expected = get_admin_passcode()
+    if not x_admin_passcode or x_admin_passcode != expected:
+        raise HTTPException(status_code=401, detail="Unauthorized: Invalid Admin Passcode")
+
+
+@app.post("/api/admin/verify")
+def verify_admin_passcode(payload: dict):
+    passcode = payload.get("passcode", "")
+    expected = get_admin_passcode()
+    if passcode == expected:
+        return {"success": True, "message": "Admin authenticated successfully."}
+    raise HTTPException(status_code=401, detail="Invalid admin passcode.")
+
+
+@app.get("/api/admin/metrics")
+def get_admin_metrics(x_admin_passcode: str = Header(None, alias="X-Admin-Passcode")):
+    _verify_admin(x_admin_passcode)
+    try:
+        from telemetry_manager import get_telemetry_summary
+        summary = get_telemetry_summary()
+        return {"success": True, "data": summary}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/api/admin/logs")
+def clear_admin_logs(x_admin_passcode: str = Header(None, alias="X-Admin-Passcode")):
+    _verify_admin(x_admin_passcode)
+    try:
+        from telemetry_manager import clear_telemetry_logs
+        clear_telemetry_logs()
+        return {"success": True, "message": "Telemetry logs cleared successfully."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
