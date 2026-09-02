@@ -5,6 +5,7 @@ import { ArrowLeft, BrainCircuit, Activity, AlertCircle, Clock, ShieldCheck, Lay
 import PipelineStep from "../components/PipelineStep";
 import ReportPanel from "../components/ReportPanel";
 import { runResearch, runResearchStream } from "../api/research";
+import { saveRecentTopic } from "../utils/recentTopics";
 
 const steps = [
   { title: "Smart Search", desc: "Searching trusted sources using Tavily." },
@@ -122,6 +123,10 @@ function Research() {
   }, [topic]);
 
   useEffect(() => {
+    // Persist topic to localStorage history whenever research page is visited
+    if (topic && topic.trim()) {
+      saveRecentTopic(topic.trim());
+    }
     executeWorkflow(false);
 
     return () => {

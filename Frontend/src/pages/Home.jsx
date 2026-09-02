@@ -1,7 +1,17 @@
-import { useState } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
-import { motion } from "framer-motion";
-import { Search, Sparkles, ShieldCheck, FileText, Cpu, ArrowRight, Zap } from "lucide-react";
+import { motion, AnimatePresence } from "framer-motion";
+import {
+  Search, Sparkles, ShieldCheck, FileText, Cpu,
+  ArrowRight, Zap, Clock, X, Trash2, History
+} from "lucide-react";
+import {
+  getRecentTopics,
+  saveRecentTopic,
+  removeRecentTopic,
+  clearRecentTopics,
+  formatRelativeTime,
+} from "../utils/recentTopics";
 
 const SUGGESTED_TOPICS = [
   "Impact of Generative AI on Software Engineering Productivity",
@@ -12,12 +22,35 @@ const SUGGESTED_TOPICS = [
 
 function Home() {
   const [topic, setTopic] = useState("");
+  const [recentTopics, setRecentTopics] = useState([]);
   const navigate = useNavigate();
 
-  const handleStart = (selectedTopic) => {
-    const targetTopic = selectedTopic || topic;
-    if (!targetTopic.trim()) return;
-    navigate("/research", { state: { topic: targetTopic.trim() } });
+  // Load recent topics on mount
+  useEffect(() => {
+    setRecentTopics(getRecentTopics());
+  }, []);
+
+  const handleStart = useCallback(
+    (selectedTopic) => {
+      const targetTopic = selectedTopic || topic;
+      if (!targetTopic.trim()) return;
+      const trimmed = targetTopic.trim();
+      saveRecentTopic(trimmed);
+      setRecentTopics(getRecentTopics());
+      navigate("/research", { state: { topic: trimmed } });
+    },
+    [topic, navigate]
+  );
+
+  const handleRemove = (e, topicStr) => {
+    e.stopPropagation();
+    removeRecentTopic(topicStr);
+    setRecentTopics(getRecentTopics());
+  };
+
+  const handleClearAll = () => {
+    clearRecentTopics();
+    setRecentTopics([]);
   };
 
   return (
@@ -89,6 +122,62 @@ function Home() {
               ))}
             </div>
           </div>
+
+          {/* RECENT TOPICS */}
+          <AnimatePresence>
+            {recentTopics.length > 0 && (
+              <motion.div
+                className="recent-topics-section"
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -8 }}
+                transition={{ duration: 0.35 }}
+              >
+                <div className="recent-header">
+                  <span className="recent-label">
+                    <History size={13} />
+                    Recent Searches
+                    <span className="recent-count">{recentTopics.length}</span>
+                  </span>
+                  <button className="recent-clear-btn" onClick={handleClearAll} title="Clear all history">
+                    <Trash2 size={12} />
+                    <span>Clear all</span>
+                  </button>
+                </div>
+
+                <div className="recent-list">
+                  <AnimatePresence initial={false}>
+                    {recentTopics.map((item, idx) => (
+                      <motion.div
+                        key={item.topic}
+                        className="recent-item"
+                        initial={{ opacity: 0, x: -12 }}
+                        animate={{ opacity: 1, x: 0 }}
+                        exit={{ opacity: 0, x: 16, height: 0, marginBottom: 0, padding: 0 }}
+                        transition={{ duration: 0.22, delay: idx * 0.04 }}
+                        onClick={() => handleStart(item.topic)}
+                      >
+                        <div className="recent-item-left">
+                          <Clock size={13} className="recent-clock-icon" />
+                          <span className="recent-topic-text">{item.topic}</span>
+                        </div>
+                        <div className="recent-item-right">
+                          <span className="recent-time">{formatRelativeTime(item.timestamp)}</span>
+                          <button
+                            className="recent-remove-btn"
+                            onClick={(e) => handleRemove(e, item.topic)}
+                            title="Remove from history"
+                          >
+                            <X size={12} />
+                          </button>
+                        </div>
+                      </motion.div>
+                    ))}
+                  </AnimatePresence>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
         </motion.div>
 
         {/* RECTANGULAR FEATURE CARDS */}
