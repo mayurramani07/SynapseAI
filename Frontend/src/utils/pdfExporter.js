@@ -4,18 +4,85 @@
  * branding, table of contents, structured formatting, and footnoted citations.
  */
 
+// Helper to convert Markdown tables to clean HTML tables
+function buildHtmlTable(headers, rows) {
+  if (!headers || headers.length === 0) return "";
+
+  const headerHtml = headers.map((h) => `<th>${h}</th>`).join("");
+  const rowsHtml = rows
+    .map((row) => {
+      const cellsHtml = row.map((c) => `<td>${c}</td>`).join("");
+      return `<tr>${cellsHtml}</tr>`;
+    })
+    .join("\n");
+
+  return `<div class="table-wrapper">
+    <table class="report-table">
+      <thead><tr>${headerHtml}</tr></thead>
+      <tbody>${rowsHtml}</tbody>
+    </table>
+  </div>`;
+}
+
+function parseMarkdownTables(text) {
+  if (!text) return "";
+  const lines = text.split("\n");
+  const output = [];
+  let inTable = false;
+  let tableHeader = [];
+  let tableRows = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    const rawLine = lines[i];
+    const line = rawLine.trim();
+
+    // Check if line looks like a markdown table row
+    const isTableRow = line.includes("|") && line.split("|").length >= 3;
+    const isSeparator = isTableRow && /^[|:\s\-]+$/.test(line);
+
+    if (isTableRow) {
+      const cells = line
+        .split("|")
+        .map((c) => c.trim())
+        .filter((c, idx, arr) => idx > 0 && idx < arr.length - 1 || (c !== "" && arr.length > 2));
+
+      if (!inTable) {
+        inTable = true;
+        tableHeader = cells;
+      } else if (isSeparator) {
+        // Skip markdown table separator row (|---|---|)
+        continue;
+      } else {
+        if (cells.length > 0) {
+          tableRows.push(cells);
+        }
+      }
+    } else {
+      if (inTable) {
+        output.push(buildHtmlTable(tableHeader, tableRows));
+        inTable = false;
+        tableHeader = [];
+        tableRows = [];
+      }
+      output.push(rawLine);
+    }
+  }
+
+  if (inTable) {
+    output.push(buildHtmlTable(tableHeader, tableRows));
+  }
+
+  return output.join("\n");
+}
+
 // Helper to convert basic Markdown to clean HTML for print view
 function markdownToHtml(mdText) {
   if (!mdText || typeof mdText !== "string") return "";
 
-  let html = mdText;
+  // 1. Parse tables first
+  let html = parseMarkdownTables(mdText);
 
-  // Escape HTML tags to prevent XSS
-  html = html
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
-
+  // 2. Escape HTML special chars except tags we generate
   // Headers
   html = html.replace(/^### (.*$)/gim, "<h3>$1</h3>");
   html = html.replace(/^## (.*$)/gim, "<h2>$1</h2>");
@@ -38,7 +105,6 @@ function markdownToHtml(mdText) {
   // Unordered Lists
   html = html.replace(/^\* (.*$)/gim, "<ul><li>$1</li></ul>");
   html = html.replace(/^- (.*$)/gim, "<ul><li>$1</li></ul>");
-  // Fix consecutive <ul> tags
   html = html.replace(/<\/ul>\s*<ul>/g, "");
 
   // Ordered Lists
@@ -56,7 +122,8 @@ function markdownToHtml(mdText) {
         trimmed.startsWith("<ol") ||
         trimmed.startsWith("<blockquote") ||
         trimmed.startsWith("<hr") ||
-        trimmed.startsWith("<table")
+        trimmed.startsWith("<table") ||
+        trimmed.startsWith("<div class=\"table-wrapper\"")
       ) {
         return trimmed;
       }
@@ -120,7 +187,7 @@ export function exportToPublicationPdf(topic, result, duration) {
   const insightsHtml = markdownToHtml(insights);
   const feedbackHtml = markdownToHtml(feedback);
 
-  // Evidence Rows & Citation Index
+  // Grounded Evidence Rows & Citation Index (Strict Column Order: # -> Claim & Quote -> Type -> Source Domain -> Verification)
   const citationsRowsHtml = evidenceList
     .map((item, idx) => {
       const footnoteId = idx + 1;
@@ -134,7 +201,7 @@ export function exportToPublicationPdf(topic, result, duration) {
       <tr>
         <td class="col-idx"><strong>[${footnoteId}]</strong></td>
         <td class="col-claim">
-          <strong>${item.claim || "Fact Claim"}</strong>
+          <div class="claim-header">${item.claim || "Fact Claim"}</div>
           ${item.supporting_text ? `<div class="quote-text">"${item.supporting_text}"</div>` : ""}
         </td>
         <td class="col-type"><span class="badge-type">${item.evidence_type || "factual_claim"}</span></td>
@@ -180,6 +247,7 @@ export function exportToPublicationPdf(topic, result, duration) {
       font-size: 13.5px;
       -webkit-print-color-adjust: exact;
       print-color-adjust: exact;
+      padding-top: 60px;
     }
 
     a {
@@ -197,7 +265,7 @@ export function exportToPublicationPdf(topic, result, duration) {
        ═══════════════════════════════════════════════════ */
     .cover-page {
       height: 100vh;
-      min-height: 280mm;
+      min-height: 270mm;
       display: flex;
       flex-direction: column;
       justify-content: space-between;
@@ -244,7 +312,7 @@ export function exportToPublicationPdf(topic, result, duration) {
 
     .cover-body {
       margin: auto 0;
-      padding: 40px 0;
+      padding: 30px 0;
     }
 
     .doc-type-label {
@@ -268,21 +336,22 @@ export function exportToPublicationPdf(topic, result, duration) {
     }
 
     .cover-title {
-      font-size: 34px;
+      font-size: 32px;
       font-weight: 800;
       line-height: 1.25;
       letter-spacing: -1.2px;
       color: #000000;
-      margin-bottom: 24px;
-      max-width: 90%;
+      margin-bottom: 20px;
+      max-width: 95%;
+      word-break: break-word;
     }
 
     .cover-subtitle {
-      font-size: 15px;
+      font-size: 14.5px;
       color: #52525b;
       line-height: 1.7;
-      max-width: 85%;
-      margin-bottom: 40px;
+      max-width: 90%;
+      margin-bottom: 36px;
     }
 
     .metadata-grid {
@@ -292,7 +361,7 @@ export function exportToPublicationPdf(topic, result, duration) {
       background: #ffffff;
       border: 1px solid #e4e4e7;
       border-radius: 12px;
-      padding: 24px;
+      padding: 22px;
       box-shadow: 0 4px 20px rgba(0, 0, 0, 0.03);
     }
 
@@ -382,7 +451,7 @@ export function exportToPublicationPdf(topic, result, duration) {
     }
 
     /* ═══════════════════════════════════════════════════
-       3. DOCUMENT BODY STYLING
+       3. DOCUMENT BODY & TABLE STYLING
        ═══════════════════════════════════════════════════ */
     .doc-section {
       margin-bottom: 36px;
@@ -439,43 +508,67 @@ export function exportToPublicationPdf(topic, result, duration) {
       margin-bottom: 6px;
     }
 
-    /* ═══════════════════════════════════════════════════
-       4. CITATION TABLE
-       ═══════════════════════════════════════════════════ */
-    .citations-table {
+    /* EXECUTIVE TABLE FORMATTING */
+    .table-wrapper {
+      width: 100%;
+      overflow-x: auto;
+      margin: 20px 0;
+      page-break-inside: avoid;
+      break-inside: avoid;
+    }
+
+    table, .report-table, .citations-table {
       width: 100%;
       border-collapse: collapse;
-      margin-top: 16px;
-      font-size: 12px;
+      margin: 16px 0;
+      font-size: 12.5px;
       border: 1px solid #e4e4e7;
       border-radius: 8px;
       overflow: hidden;
+      box-shadow: 0 1px 4px rgba(0, 0, 0, 0.03);
     }
 
-    .citations-table th {
+    table th, .report-table th, .citations-table th {
       background: #f4f4f5;
       color: #000000;
       font-weight: 700;
       text-align: left;
-      padding: 10px 12px;
-      border-bottom: 1px solid #e4e4e7;
+      padding: 10px 14px;
+      border-bottom: 2px solid #d4d4d8;
+      border-right: 1px solid #e4e4e7;
+      font-size: 11.5px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
     }
 
-    .citations-table td {
-      padding: 10px 12px;
+    table td, .report-table td, .citations-table td {
+      padding: 10px 14px;
       border-bottom: 1px solid #f4f4f5;
+      border-right: 1px solid #f4f4f5;
+      color: #27272a;
+      line-height: 1.55;
       vertical-align: top;
+      word-break: break-word;
+      overflow-wrap: anywhere;
     }
 
-    .citations-table tr:nth-child(even) td {
+    table tr:nth-child(even) td, .report-table tr:nth-child(even) td, .citations-table tr:nth-child(even) td {
       background: #fafafa;
     }
 
-    .col-idx { width: 45px; text-align: center; }
-    .col-claim { min-width: 220px; }
-    .quote-text { font-style: italic; color: #71717a; font-size: 11px; margin-top: 4px; }
-    .col-type { width: 110px; }
-    .col-source { width: 120px; }
+    table th:last-child, table td:last-child,
+    .report-table th:last-child, .report-table td:last-child,
+    .citations-table th:last-child, .citations-table td:last-child {
+      border-right: none;
+    }
+
+    /* CITATION TABLE COLUMN LAYOUT & ORDER */
+    .col-idx { width: 45px; text-align: center; font-weight: 700; }
+    .col-claim { min-width: 240px; }
+    .claim-header { font-weight: 600; color: #09090b; }
+    .quote-text { font-style: italic; color: #71717a; font-size: 11px; margin-top: 5px; line-height: 1.45; }
+    .col-type { width: 115px; }
+    .col-source { width: 125px; }
     .col-conf { width: 100px; text-align: right; }
 
     .badge-type {
@@ -484,9 +577,10 @@ export function exportToPublicationPdf(topic, result, duration) {
       text-transform: uppercase;
       background: #f4f4f5;
       border: 1px solid #e4e4e7;
-      padding: 2px 6px;
+      padding: 2px 7px;
       border-radius: 4px;
       color: #3f3f46;
+      display: inline-block;
     }
 
     .conf-badge {
@@ -497,7 +591,7 @@ export function exportToPublicationPdf(topic, result, duration) {
     .conf-high { color: #16a34a; }
     .conf-low { color: #dc2626; }
 
-    /* Floating Print Button for Preview Screen */
+    /* Floating Print Action Bar */
     .no-print-bar {
       position: fixed;
       top: 0;
@@ -525,6 +619,7 @@ export function exportToPublicationPdf(topic, result, duration) {
       display: flex;
       align-items: center;
       gap: 6px;
+      transition: background 0.15s ease;
     }
 
     .no-print-bar button:hover {
@@ -539,10 +634,6 @@ export function exportToPublicationPdf(topic, result, duration) {
         padding-top: 0 !important;
       }
     }
-
-    body {
-      padding-top: 60px;
-    }
   </style>
 </head>
 <body>
@@ -550,7 +641,7 @@ export function exportToPublicationPdf(topic, result, duration) {
   <!-- Floating Action Bar for Web Preview -->
   <div class="no-print-bar">
     <div>
-      <strong>SynapseAI Publication-Grade Export</strong> — Ready for PDF Download
+      <strong>SynapseAI Publication-Grade Export</strong> — Executive PDF Preview
     </div>
     <button onclick="window.print()">
       🖨️ Print / Save as PDF
@@ -613,7 +704,7 @@ export function exportToPublicationPdf(topic, result, duration) {
         <span>Page 3</span>
       </div>
       <div class="toc-item">
-        <span>2. Verified Evidence Matrix (${evidenceList.length} Items)</span>
+        <span>2. Grounded Evidence Matrix (${evidenceList.length} Items)</span>
         <span class="toc-dots"></span>
         <span>Page 4</span>
       </div>
@@ -648,25 +739,27 @@ export function exportToPublicationPdf(topic, result, duration) {
     </div>
   </div>
 
-  <!-- 4. VERIFIED EVIDENCE MATRIX -->
+  <!-- 4. GROUNDED EVIDENCE MATRIX TABLE -->
   <div class="doc-section page-break">
     <h2 class="section-title">2. Grounded Evidence Matrix</h2>
-    <p>The following table lists claim-level facts extracted and verified from authoritative web domains.</p>
+    <p style="margin-bottom:16px;">The following structured matrix lists claim-level facts extracted and verified from authoritative web domains.</p>
     
-    <table class="citations-table">
-      <thead>
-        <tr>
-          <th class="col-idx">#</th>
-          <th class="col-claim">Claim & Supporting Excerpt</th>
-          <th class="col-type">Type</th>
-          <th class="col-source">Domain</th>
-          <th class="col-conf">Verification</th>
-        </tr>
-      </thead>
-      <tbody>
-        ${citationsRowsHtml || "<tr><td colspan='5'>No verified evidence items recorded.</td></tr>"}
-      </tbody>
-    </table>
+    <div class="table-wrapper">
+      <table class="citations-table">
+        <thead>
+          <tr>
+            <th class="col-idx">#</th>
+            <th class="col-claim">Claim & Supporting Excerpt</th>
+            <th class="col-type">Evidence Type</th>
+            <th class="col-source">Source Domain</th>
+            <th class="col-conf">Verification</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${citationsRowsHtml || "<tr><td colspan='5'>No verified evidence items recorded.</td></tr>"}
+        </tbody>
+      </table>
+    </div>
   </div>
 
   <!-- 5. STRATEGIC REASONING -->
