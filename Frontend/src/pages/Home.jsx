@@ -94,7 +94,7 @@ function Home() {
         >
           <div className="search-box">
             <div className="search-input-wrapper">
-              <Search className="search-icon" size={18} />
+              <Search className="search-icon" size={20} />
               <input
                 placeholder="Enter any complex research topic..."
                 value={topic}
@@ -102,7 +102,7 @@ function Home() {
                 onKeyDown={(e) => e.key === "Enter" && handleStart()}
               />
             </div>
-            <button onClick={() => handleStart()} className="glow-btn">
+            <button type="button" onClick={() => handleStart()} className="glow-btn">
               <span>Start Research</span>
               <ArrowRight size={16} />
             </button>
