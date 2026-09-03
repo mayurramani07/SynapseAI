@@ -82,6 +82,21 @@ function AdminGuard({ children }) {
               </>
             )}
           </button>
+
+          {sessionStorage.getItem("synapse_admin_passcode") && (
+            <button
+              type="button"
+              className="recent-clear-btn"
+              style={{ marginTop: "12px", width: "100%", justifyContent: "center" }}
+              onClick={() => {
+                sessionStorage.removeItem("synapse_admin_passcode");
+                setPasscode("");
+                setError("Stored session cleared. Please enter your new passcode.");
+              }}
+            >
+              <span>Clear Saved Passcode</span>
+            </button>
+          )}
         </form>
       </div>
     </div>
